@@ -14,10 +14,22 @@ struct VulkanState{
     vk::UniqueDevice const device;
 };
 
-auto createInstance(std::vector<std::string> const & requiredLayerNames, std::vector<std::string> const & requiredExtensionNames){
+auto hasLayers(std::vector<std::string> const & layers){
     auto const layerProperties = vk::enumerateInstanceLayerProperties();
 
-    if(requiredLayerNames | std::views::all([](auto name){return true;}))
+    layerProperties 
+        | std::views::transform([](auto layerProperties){return std::string(layerProperties.layerName.data());});
+
+    return false;
+}
+
+auto hasExtensions(std::vector<std::string> const & extensions){
+
+}
+
+auto createInstance(std::vector<std::string> const & requiredLayerNames, std::vector<std::string> const & requiredExtensionNames){
+
+    if(not hasLayers(requiredLayerNames)) std::terminate();
 
     auto const extensions = vk::enumerateInstanceExtensionProperties();
 
