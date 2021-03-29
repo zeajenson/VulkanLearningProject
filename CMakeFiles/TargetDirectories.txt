@@ -1,3 +1,0 @@
-/home/scromble/Workspace/VulkanLearningProject/CMakeFiles/rebuild_cache.dir
-/home/scromble/Workspace/VulkanLearningProject/CMakeFiles/edit_cache.dir
-/home/scromble/Workspace/VulkanLearningProject/CMakeFiles/VulkanLearningProject.dir

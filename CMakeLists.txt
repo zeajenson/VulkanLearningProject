@@ -6,8 +6,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 find_package(Vulkan REQUIRED FATAL_ERROR)
-find_package(glfw REQUIRED FATAL_ERROR) 
+find_package(glfw3 3.3 REQUIRED FATAL_ERROR) 
 
-add_executable(VulkanLearningProject src/main.cpp glfw ${VULKAN_LIB_LIST})
+add_executable(VulkanLearningProject src/main.cpp) 
 
-target_link_libraries(VulkanLearningProject)
+target_link_libraries(VulkanLearningProject glfw ${VULKAN_LIB_LIST})
