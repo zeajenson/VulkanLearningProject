@@ -7,3 +7,6 @@ cmake_install.cmake
 compile_commands.json
 CMakeFiles/
 Makefile
+frag.spv
+vert.spv
+
