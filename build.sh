@@ -1,4 +1,4 @@
-cmake -G Ninja
+cmake -G Ninja ./
 ninja
 
 glslc shader.frag -o frag.spv

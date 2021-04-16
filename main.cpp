@@ -1,9 +1,12 @@
 #include<iostream>
 #include<ranges>
-#include<thread>
+#include<fstream>
+#include<filesystem>
 
 #include<vulkan/vulkan.hpp>
 #include<GLFW/glfw3.h>
+
+#include"VulkanStuff.cpp"
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -134,11 +137,13 @@ int main(){
 
     auto const imageCount = capabilities.minImageCount + 1;
 
+    auto const swapchainImageFormat = surfaceFormat.format;
+
     auto const createSwapchain = [&]()->vk::UniqueSwapchainKHR{
         auto info = vk::SwapchainCreateInfoKHR{};
         info.surface = surface.get();
         info.minImageCount = imageCount;
-        info.imageFormat = surfaceFormat.format;
+        info.imageFormat = swapchainImageFormat;
         info.imageColorSpace = surfaceFormat.colorSpace;
         info.imageExtent = extent;
         info.imageArrayLayers = 1;
@@ -191,7 +196,9 @@ int main(){
         return imageViews;
     }();
 
-
+    auto const renderPass = createRenderPass(device, swapchainImageFormat);
+    auto const pipelineLayout = device->createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo());
+    auto const renderPipeline = createGraphicsPipeline(device, renderPass, pipelineLayout, extent);
 
     for(;!glfwWindowShouldClose(window);){
         
