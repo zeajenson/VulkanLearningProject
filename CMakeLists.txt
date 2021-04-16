@@ -10,4 +10,4 @@ find_package(glfw3 3.3 REQUIRED FATAL_ERROR)
 
 add_executable(VulkanLearningProject src/main.cpp) 
 
-target_link_libraries(VulkanLearningProject glfw ${VULKAN_LIB_LIST})
+target_link_libraries(VulkanLearningProject glfw Vulkan::Vulkan)
