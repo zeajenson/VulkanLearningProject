@@ -37,7 +37,18 @@ auto createRenderPass(vk::UniqueDevice const & device, vk::Format format){
 
     auto const subpass = vk::SubpassDescription({}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &colorAttachmentRef);
 
-    return device->createRenderPassUnique(vk::RenderPassCreateInfo({}, 1, &collorAttachment, 1, &subpass));
+    auto const subpassDependency = vk::SubpassDependency(
+            VK_SUBPASS_EXTERNAL, 
+            0, 
+            vk::PipelineStageFlagBits::eColorAttachmentOutput, 
+            vk::PipelineStageFlagBits::eColorAttachmentOutput, 
+            {}, 
+            vk::AccessFlagBits::eColorAttachmentWrite);
+
+    return device->createRenderPassUnique(vk::RenderPassCreateInfo({}, 
+                1, &collorAttachment, 
+                1, &subpass, 
+                1, &subpassDependency));
 }
 
 auto createGraphicsPipeline(
@@ -64,7 +75,7 @@ auto createGraphicsPipeline(
 
     auto const inputAssemblyInfo = vk::PipelineInputAssemblyStateCreateInfo({}, vk::PrimitiveTopology::eTriangleList, VK_FALSE);
 
-    auto const viewport = vk::Viewport(0.0f, 0.0f, (float) swapchainExtent.width, swapchainExtent.height, 0.0f, 1.0f);
+    auto const viewport = vk::Viewport(0.0f, 0.0f, swapchainExtent.width, swapchainExtent.height, 0.0f, 1.0f);
 
     auto const scissor = vk::Rect2D({0,0}, swapchainExtent);
 
@@ -104,7 +115,11 @@ auto createGraphicsPipeline(
             1, & colorBlendAttachment, 
             blendConstants);
 
-    auto const dynamicStates = std::array{vk::DynamicState::eViewport, vk::DynamicState::eLineWidth};
+    //TODO: dynamic viewport.
+    auto const dynamicStates = std::array{
+        //vk::DynamicState::eViewport, 
+        vk::DynamicState::eLineWidth
+    };
     auto const dynamicState = vk::PipelineDynamicStateCreateInfo({}, dynamicStates);
 
     auto const createInfos = std::array{
@@ -124,7 +139,8 @@ auto createGraphicsPipeline(
                 0) 
     };
 
-    return device->createGraphicsPipelinesUnique({}, createInfos);
+    //TODO: check return result and see why creation may have failed.
+    return device->createGraphicsPipelinesUnique({}, createInfos).value;
 }
 
 auto createFrameBuffers(
@@ -149,3 +165,30 @@ auto createFrameBuffers(
 
     return frameBuffers;
 }
+
+struct Synchronization{
+    vk::UniqueSemaphore imageAvailableSemaphore;
+    vk::UniqueSemaphore renderFinishedSemaphore;
+    vk::UniqueFence inFlightFence;
+};
+
+auto createSynchronization(vk::UniqueDevice const & device, int32_t maxFramesInFlight){
+    auto frameSync = std::vector<Synchronization>();
+    frameSync.reserve(maxFramesInFlight);
+
+    for(int i = 0; i < maxFramesInFlight; i++){
+        frameSync.push_back(Synchronization{
+                    device->createSemaphoreUnique(vk::SemaphoreCreateInfo()),
+                    device->createSemaphoreUnique(vk::SemaphoreCreateInfo()),
+                    device->createFenceUnique(vk::FenceCreateInfo(vk::FenceCreateFlagBits::eSignaled))
+                });
+    }
+
+    return frameSync;
+}
+
+void drawFrame(){
+
+}
+
+

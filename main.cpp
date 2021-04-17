@@ -137,6 +137,8 @@ int main(){
 
     auto const imageCount = capabilities.minImageCount + 1;
 
+    std::cout << imageCount << "images" << std::endl;
+
     auto const swapchainImageFormat = surfaceFormat.format;
 
     auto const createSwapchain = [&]()->vk::UniqueSwapchainKHR{
@@ -199,15 +201,102 @@ int main(){
 
     auto const renderPass = createRenderPass(device, swapchainImageFormat);
     auto const pipelineLayout = device->createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo());
-    auto const renderPipeline = createGraphicsPipeline(device, renderPass, pipelineLayout, extent);
+    auto const renderPipeline = std::move(createGraphicsPipeline(device, renderPass, pipelineLayout, extent).back());
 
     auto const frameBuffers = createFrameBuffers(device, swapchainImageViews, renderPass, extent);
 
+    auto const commandPool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo({}, graphicsIndex));
+
+    auto const commandBuffers = device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo(
+                commandPool.get(), 
+                vk::CommandBufferLevel::ePrimary, 
+                frameBuffers.size()));
+
+    for(auto i = 0; i < commandBuffers.size(); i++){
+        //TODO: just zip these together.
+        auto const & commandBuffer = commandBuffers[i];
+        auto const & frameBuffer = frameBuffers[i];
+
+        commandBuffer->begin(vk::CommandBufferBeginInfo());
+        auto const clearColor = std::vector{vk::ClearValue(vk::ClearColorValue(std::array{0.0f, 0.0f, 0.0f ,0.0f}))};
+        auto const renderArea = vk::Rect2D({0,0},extent);
+        commandBuffer->beginRenderPass(
+                vk::RenderPassBeginInfo(
+                    renderPass.get(), 
+                    frameBuffer.get(), 
+                    renderArea, 
+                    clearColor), 
+                vk::SubpassContents::eInline);
+
+        commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, renderPipeline.get());
+        commandBuffer->draw(3,1,0,0);
+        commandBuffer->endRenderPass();
+        commandBuffer->end();
+    } 
+
+    auto const maxFramesInFlight = 2;
+    auto perFrameSync = createSynchronization(device, maxFramesInFlight);
+    auto imagesInFlight = std::vector<vk::Fence>(swapchainImages.size(), nullptr);
+    auto currentFrame = 0;
+
+    auto const presentQueue = device->getQueue(presentIndex, 0);
+
+    auto drawFrame = [&]{
+        if(device->waitForFences(1, &perFrameSync[currentFrame].inFlightFence.get(), VK_TRUE, UINT64_MAX) != vk::Result::eSuccess)
+            std::cout << "unable to wait for fence: " << currentFrame << std::endl;
 
 
-    for(;!glfwWindowShouldClose(window);){
+        auto const imageIndex = device->acquireNextImageKHR(
+                swapchain.get(), 
+                UINT64_MAX, 
+                perFrameSync[currentFrame].imageAvailableSemaphore.get(), 
+                perFrameSync[currentFrame].inFlightFence.get());
+
+        if(imagesInFlight[imageIndex.value]){
+            if(device->waitForFences(1, &imagesInFlight[imageIndex.value], VK_TRUE, UINT64_MAX) != vk::Result::eSuccess)
+                std::cout << "Unable to wait for image in flight fence: " << imageIndex.value << std::endl;
+        }
+        imagesInFlight[imageIndex.value] = perFrameSync[currentFrame].inFlightFence.get();
+
+
+        vk::Semaphore waitSemaphores[] = {perFrameSync[currentFrame].imageAvailableSemaphore.get()};
+        vk::PipelineStageFlags waitDstStageMasks[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
+
+        vk::Semaphore signalSemaphores[] = {perFrameSync[currentFrame].renderFinishedSemaphore.get()};
+
+        vk::CommandBuffer graphicsQueueCommandBuffers[] = {commandBuffers[imageIndex.value].get()};
+
+        auto const submitInfo = vk::SubmitInfo(
+                    1, waitSemaphores, 
+                    waitDstStageMasks,
+                    1, graphicsQueueCommandBuffers,
+                    1, signalSemaphores);
+
+        if(device->resetFences(1, &perFrameSync[currentFrame].inFlightFence.get()) != vk::Result::eSuccess)
+            std::cout << "Unable to reset fence: " << currentFrame << std::endl;
+
+        if(graphicsQueue.submit(1, &submitInfo, perFrameSync[currentFrame].inFlightFence.get()) != vk::Result::eSuccess)
+            std::cerr << "Bad submit" << std::endl;
         
+
+        auto const presentInfo = vk::PresentInfoKHR(
+                1, signalSemaphores, 
+                1, &swapchain.get(), 
+                &imageIndex.value);
+
+        if(presentQueue.presentKHR(presentInfo) != vk::Result::eSuccess){
+            std::cerr << "Bad present" << std::endl;
+        }
+
+        presentQueue.waitIdle();
+
+        currentFrame = (currentFrame + 1) % maxFramesInFlight;
+    };
+
+    
+    for(;!glfwWindowShouldClose(window);){
         glfwPollEvents();
+        drawFrame();
     }
 
     glfwTerminate();
