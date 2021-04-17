@@ -150,7 +150,7 @@ int main(){
         info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
 
         if(graphicsIndex == presentIndex){
-            auto const indices = std::vector<uint32_t>{
+            auto const indices = std::vector{
                 static_cast<uint32_t>(graphicsIndex), 
                 static_cast<uint32_t>(presentIndex)
             };

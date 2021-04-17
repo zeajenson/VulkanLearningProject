@@ -4,10 +4,10 @@
 
 #include<vulkan/vulkan.hpp>
 
-auto loadShader(std::filesystem::path path) -> std::vector<uint32_t>{
-    auto file = std::basic_ifstream<uint32_t>(path.string(), std::ios::ate | std::ios::binary);
+auto loadShader(std::filesystem::path path){
+    auto file = std::ifstream(path.string(), std::ios::ate | std::ios::binary);
     auto const fileSize = (size_t) file.tellg();
-    auto buffer = std::vector<uint32_t>(fileSize);
+    auto buffer = std::vector<char>(fileSize);
     file.seekg(0);
     file.read(buffer.data(), fileSize);
 
@@ -16,7 +16,9 @@ auto loadShader(std::filesystem::path path) -> std::vector<uint32_t>{
 
 auto createShaderModule(std::filesystem::path path, vk::UniqueDevice const & device){
     auto const shaderCode = loadShader(path);
-    return device->createShaderModuleUnique(vk::ShaderModuleCreateInfo({}, shaderCode));
+    return device->createShaderModuleUnique(vk::ShaderModuleCreateInfo({}, 
+            shaderCode.size(), 
+            reinterpret_cast<uint32_t const *>(shaderCode.data())));
 }
 
 auto createRenderPass(vk::UniqueDevice const & device, vk::Format format){
@@ -44,13 +46,13 @@ auto createGraphicsPipeline(
         vk::UniquePipelineLayout const & layout,
         vk::Extent2D const & swapchainExtent)
 {
-    auto const vertShaderModule = createShaderModule("shader.vert", device);
+    auto const vertShaderModule = createShaderModule("./vert.spv", device);
     auto const vertShaderStageInfo = vk::PipelineShaderStageCreateInfo({}, 
             vk::ShaderStageFlagBits::eVertex, 
             vertShaderModule.get(), 
             "main");
 
-    auto const fragShaderModule = createShaderModule("./shader.frag", device);
+    auto const fragShaderModule = createShaderModule("./frag.spv", device);
     auto const fragShaderStageInfo = vk::PipelineShaderStageCreateInfo({}, 
             vk::ShaderStageFlagBits::eFragment, 
             fragShaderModule.get(), 
