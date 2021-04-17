@@ -127,3 +127,25 @@ auto createGraphicsPipeline(
     return device->createGraphicsPipelinesUnique({}, createInfos);
 }
 
+auto createFrameBuffers(
+        vk::UniqueDevice const & device, 
+        std::vector<vk::UniqueImageView> const & swapchainImageViews,
+        vk::UniqueRenderPass const & renderPass,
+        vk::Extent2D const & extent)
+{
+    auto frameBuffers = std::vector<vk::UniqueFramebuffer>();
+    frameBuffers.reserve(swapchainImageViews.size());
+    for(auto const & imageView : swapchainImageViews){
+        
+        auto const attachments = std::vector{ imageView.get() };
+
+        frameBuffers.push_back(device->createFramebufferUnique(vk::FramebufferCreateInfo({}, 
+                        renderPass.get(), 
+                        attachments, 
+                        extent.width, 
+                        extent.height, 
+                        1)));
+    }
+
+    return frameBuffers;
+}

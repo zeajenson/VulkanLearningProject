@@ -176,7 +176,8 @@ int main(){
     auto const swapchainImages = device->getSwapchainImagesKHR(swapchain.get());
 
     auto const swapchainImageViews = [&]{
-        auto imageViews = std::vector<vk::UniqueImageView>(swapchainImages.size());
+        auto imageViews = std::vector<vk::UniqueImageView>();
+        imageViews.reserve(swapchainImages.size());
 
         auto const swizIdent = vk::ComponentSwizzle::eIdentity;
 
@@ -199,6 +200,10 @@ int main(){
     auto const renderPass = createRenderPass(device, swapchainImageFormat);
     auto const pipelineLayout = device->createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo());
     auto const renderPipeline = createGraphicsPipeline(device, renderPass, pipelineLayout, extent);
+
+    auto const frameBuffers = createFrameBuffers(device, swapchainImageViews, renderPass, extent);
+
+
 
     for(;!glfwWindowShouldClose(window);){
         
