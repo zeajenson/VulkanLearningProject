@@ -5,6 +5,7 @@
 
 #include<vulkan/vulkan.hpp>
 #include<GLFW/glfw3.h>
+#include<glm/glm.hpp>
 
 #include"VulkanStuff.cpp"
 #include"GlfwStuff.cpp"
@@ -56,7 +57,9 @@ int main(){
             std::terminate();
         }
 
-        return vk::UniqueSurfaceKHR(vk::SurfaceKHR(surface));
+        return vk::UniqueSurfaceKHR(
+                vk::SurfaceKHR(surface), 
+                vk::ObjectDestroy<vk::Instance, vk::DispatchLoaderStatic>(instance.get()));
     }();
     
     auto const gpu = instance->enumeratePhysicalDevices().back();

@@ -7,7 +7,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 find_package(Vulkan REQUIRED FATAL_ERROR)
 find_package(glfw3 3.3 REQUIRED FATAL_ERROR) 
+find_package(glm REQUIRED FATAL_ERROR)
 
 add_executable(VulkanLearningProject main.cpp) 
 
-target_link_libraries(VulkanLearningProject glfw Vulkan::Vulkan)
+target_link_libraries(VulkanLearningProject glfw Vulkan::Vulkan glm)
