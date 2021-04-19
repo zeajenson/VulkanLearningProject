@@ -84,7 +84,13 @@ int main(){
 
     auto const graphicsQueue = device->getQueue(graphicsIndex, 0);
 
-    auto const renderState = createVulkanRenderState(device, gpu, surface, window, graphicsIndex, presentIndex);
+    auto renderState = createVulkanRenderState(device, gpu, surface, window, graphicsIndex, presentIndex);
+    auto frameResized = false;
+    
+    glfwSetWindowUserPointer(window.get(), &frameResized);
+    glfwSetFramebufferSizeCallback(window.get(), [](GLFWwindow * window, int width, int height){
+        (*(bool *)glfwGetWindowUserPointer(window)) = true;
+    });
 
     auto const maxFramesInFlight = 2;
     auto perFrameSync = createSynchronization(device, maxFramesInFlight);
@@ -93,19 +99,26 @@ int main(){
 
     auto const presentQueue = device->getQueue(presentIndex, 0);
 
+
+
     auto drawFrame = [&]{
-        puts("bla3");
         if(device->waitForFences(1, &perFrameSync[currentFrame].inFlightFence.get(), VK_TRUE, UINT64_MAX) != vk::Result::eSuccess)
             std::cout << "unable to wait for fence: " << currentFrame << std::endl;
 
-        puts("bla3");
         auto const imageIndex = device->acquireNextImageKHR(
                 renderState->swapchain.get(), 
                 UINT64_MAX, 
                 perFrameSync[currentFrame].imageAvailableSemaphore.get(), 
                 perFrameSync[currentFrame].inFlightFence.get());
+        if(imageIndex.result not_eq vk::Result::eSuccess)
+            throw std::runtime_error("failed to present swapchain image.");
 
-        puts("bla");
+        if(imageIndex.result == vk::Result::eErrorOutOfDateKHR or imageIndex.result == vk::Result::eSuboptimalKHR or frameResized){
+            renderState = createVulkanRenderState(device, gpu, surface, window, graphicsIndex, presentIndex);
+            frameResized = false;
+            return;
+        }
+        
         if(imagesInFlight[imageIndex.value])
             if(device->waitForFences(1, &imagesInFlight[imageIndex.value], VK_TRUE, UINT64_MAX) != vk::Result::eSuccess)
                 std::cout << "Unable to wait for image in flight fence: " << imageIndex.value << std::endl;

@@ -19,6 +19,7 @@ auto createGlfwWindowUnique(){
     if(glfwVulkanSupported() != GLFW_TRUE) throw std::exception{};
     
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
     return UniqueGlfwWindow(glfwCreateWindow(690, 420, "WeeWoo", nullptr, nullptr));
 }

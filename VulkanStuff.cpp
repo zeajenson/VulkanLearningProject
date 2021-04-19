@@ -190,9 +190,7 @@ auto createGraphicsPipeline(
     auto const inputAssemblyInfo = vk::PipelineInputAssemblyStateCreateInfo({}, vk::PrimitiveTopology::eTriangleList, VK_FALSE);
 
     auto const viewport = vk::Viewport(0.0f, 0.0f, swapchainExtent.width, swapchainExtent.height, 0.0f, 1.0f);
-
     auto const scissor = vk::Rect2D({0,0}, swapchainExtent);
-
     auto const viewportStateInfo = vk::PipelineViewportStateCreateInfo({}, 1, &viewport, 1, &scissor);
 
 
@@ -229,9 +227,9 @@ auto createGraphicsPipeline(
             1, & colorBlendAttachment, 
             blendConstants);
 
-    //TODO: dynamic viewport.
     auto const dynamicStates = std::array{
-        //vk::DynamicState::eViewport, 
+        vk::DynamicState::eViewport,
+        vk::DynamicState::eScissor,
         vk::DynamicState::eLineWidth
     };
     auto const dynamicState = vk::PipelineDynamicStateCreateInfo({}, dynamicStates);
@@ -322,6 +320,10 @@ auto createVulkanRenderState(
         int32_t const graphicsIndex,
         int32_t const presentIndex)
 {
+    
+    device->waitIdle();
+
+
     auto const capabilities = gpu.getSurfaceCapabilitiesKHR(surface.get());
 
     //TODO: write functions to find these.
@@ -379,11 +381,18 @@ auto createVulkanRenderState(
                     clearColor), 
                 vk::SubpassContents::eInline);
 
+        auto const viewport = vk::Viewport(0.0f, 0.0f, extent.width, extent.height, 0.0f, 1.0f);
+        commandBuffer->setViewport(0, viewport);
+
+        auto const scissor = vk::Rect2D({0,0}, extent);
+        commandBuffer->setScissor(0, scissor);
+
         commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, graphicsPipeline.get());
         commandBuffer->draw(3,1,0,0);
         commandBuffer->endRenderPass();
         commandBuffer->end();
-    } 
+    }
+     
 
     return std::make_shared<VulkanRenderState>(
         std::move(swapchain),
@@ -396,6 +405,7 @@ auto createVulkanRenderState(
         std::move(commandBuffers)
     );
 }
+
 
 void drawFrame(){
 
