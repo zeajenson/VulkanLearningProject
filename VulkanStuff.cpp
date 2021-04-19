@@ -3,6 +3,120 @@
 #include<vector>
 
 #include<vulkan/vulkan.hpp>
+#include<GLFW/glfw3.h>
+
+#include"GlfwStuff.cpp"
+
+
+auto findQueueIndices(vk::UniqueSurfaceKHR const & surface, vk::PhysicalDevice const & gpu){
+    std::optional<int> graphicsIndex{std::nullopt};
+    std::optional<int> presentIndex{std::nullopt};
+    auto const queueFamilyProperties = gpu.getQueueFamilyProperties();
+    
+    for(int i =0; i < queueFamilyProperties.size(); i++){
+        auto const & property = queueFamilyProperties[i];
+        if(!graphicsIndex && property.queueFlags & vk::QueueFlagBits::eGraphics){
+            graphicsIndex = i;
+        }
+    
+        if(!presentIndex && gpu.getSurfaceSupportKHR(i, surface.get())){
+            presentIndex = i;
+        }
+    
+        if(graphicsIndex && presentIndex){
+            break;
+        }
+    }
+    
+    struct{
+        int graphicsIndex, displayIndex;
+    } indices{graphicsIndex.value(), presentIndex.value()};
+    
+    return indices;
+}
+
+auto createExtent(vk::SurfaceCapabilitiesKHR const & capabilities, UniqueGlfwWindow const & window){
+    if(capabilities.currentExtent.width != UINT32_MAX) return capabilities.currentExtent;
+    
+    
+    auto const & minImageExtent = capabilities.minImageExtent;
+    auto const & maxImageExtent = capabilities.maxImageExtent;
+   
+    int width, height;
+    glfwGetFramebufferSize(window.get(), &width, &height);
+
+    return vk::Extent2D{
+        std::clamp(static_cast<uint32_t>(width), minImageExtent.width, maxImageExtent.width),
+        std::clamp(static_cast<uint32_t>(height), minImageExtent.height, maxImageExtent.height)
+    };
+}
+
+auto createSwapchain(
+        vk::UniqueDevice const & device,
+        vk::Extent2D const & extent,
+        vk::UniqueSurfaceKHR const & surface,
+        uint32_t imageCount,
+        vk::SurfaceFormatKHR const & surfaceFormat,
+        vk::PresentModeKHR const & presentMode,
+        vk::SurfaceCapabilitiesKHR const & capabilities,
+        uint32_t graphicsIndex,
+        uint32_t presentIndex)
+{
+    auto info = vk::SwapchainCreateInfoKHR{};
+    info.surface = surface.get();
+    info.minImageCount = imageCount;
+    info.imageFormat = surfaceFormat.format;
+    info.imageColorSpace = surfaceFormat.colorSpace;
+    info.imageExtent = extent;
+    info.imageArrayLayers = 1;
+    info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+    
+    if(graphicsIndex == presentIndex){
+        auto const indices = std::vector{
+            static_cast<uint32_t>(graphicsIndex), 
+            static_cast<uint32_t>(presentIndex)
+        };
+    
+        info.imageSharingMode = vk::SharingMode::eConcurrent;
+        info.setQueueFamilyIndices(indices);  
+    }else{
+        info.imageSharingMode = vk::SharingMode::eExclusive;
+    }
+    
+    info.preTransform = capabilities.currentTransform;
+    info.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
+    info.presentMode = presentMode;
+    info.clipped = VK_TRUE;
+    
+    info.oldSwapchain = nullptr;
+    
+    return device->createSwapchainKHRUnique(info);
+}
+
+auto createSwapchainImageViews(
+        vk::UniqueDevice const & device,
+        std::vector<vk::Image> const & swapchainImages, 
+        vk::SurfaceFormatKHR surfaceFormat){
+    auto imageViews = std::vector<vk::UniqueImageView>();
+    imageViews.reserve(swapchainImages.size());
+    
+    auto const swizIdent = vk::ComponentSwizzle::eIdentity;
+    
+    for(auto const & image: swapchainImages)
+        imageViews.push_back(device->createImageViewUnique(vk::ImageViewCreateInfo(
+            {}, 
+            image, 
+            vk::ImageViewType::e2D, 
+            surfaceFormat.format, 
+            vk::ComponentMapping(
+                swizIdent, 
+                swizIdent, 
+                swizIdent, 
+                swizIdent), 
+            vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1))));
+    
+    return imageViews;
+}
 
 auto loadShader(std::filesystem::path path){
     auto file = std::ifstream(path.string(), std::ios::ate | std::ios::binary);
@@ -185,6 +299,102 @@ auto createSynchronization(vk::UniqueDevice const & device, int32_t maxFramesInF
     }
 
     return frameSync;
+}
+
+
+
+struct VulkanRenderState{
+    vk::UniqueSwapchainKHR swapchain;
+    std::vector<vk::UniqueImageView> swapchainImageViews;
+    vk::UniqueRenderPass renderPass;
+    vk::UniquePipelineLayout pipelineLayout;
+    vk::UniquePipeline graphicsPipeline;
+    std::vector<vk::UniqueFramebuffer> frameBuffers;
+    vk::UniqueCommandPool commandPool;
+    std::vector<vk::UniqueCommandBuffer> commandBuffers;
+};
+
+auto createVulkanRenderState(
+        vk::UniqueDevice const & device,
+        vk::PhysicalDevice const & gpu,
+        vk::UniqueSurfaceKHR const & surface,
+        UniqueGlfwWindow const & window,
+        int32_t const graphicsIndex,
+        int32_t const presentIndex)
+{
+    auto const capabilities = gpu.getSurfaceCapabilitiesKHR(surface.get());
+
+    //TODO: write functions to find these.
+    auto const surfaceFormat = gpu.getSurfaceFormatsKHR(surface.get()).back(); 
+    auto const presentMode = gpu.getSurfacePresentModesKHR(surface.get()).back(); 
+
+    auto const extent = createExtent(capabilities, window);
+
+    auto const imageCount = capabilities.minImageCount + 1;
+
+    auto const swapchainImageFormat = surfaceFormat.format;
+
+    auto swapchain = createSwapchain(
+            device, 
+            extent, 
+            surface, 
+            imageCount, 
+            surfaceFormat, 
+            presentMode, 
+            capabilities, 
+            graphicsIndex, 
+            presentIndex);
+
+    auto swapchainImageViews = createSwapchainImageViews(
+            device, 
+            device->getSwapchainImagesKHR(swapchain.get()), 
+            surfaceFormat);
+
+    auto renderPass = createRenderPass(device, swapchainImageFormat);
+    auto pipelineLayout = device->createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo());
+    auto graphicsPipeline = std::move(createGraphicsPipeline(device, renderPass, pipelineLayout, extent).back());
+
+    auto frameBuffers = createFrameBuffers(device, swapchainImageViews, renderPass, extent);
+
+    auto commandPool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo({}, graphicsIndex));
+
+    auto commandBuffers = device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo(
+                commandPool.get(), 
+                vk::CommandBufferLevel::ePrimary, 
+                frameBuffers.size()));
+
+    for(auto i = 0; i < commandBuffers.size(); i++){
+        //TODO: just zip these together.
+        auto const & commandBuffer = commandBuffers[i];
+        auto const & frameBuffer = frameBuffers[i];
+
+        commandBuffer->begin(vk::CommandBufferBeginInfo());
+        auto const clearColor = std::vector{vk::ClearValue(vk::ClearColorValue(std::array{0.0f, 0.0f, 0.0f ,0.0f}))};
+        auto const renderArea = vk::Rect2D({0,0},extent);
+        commandBuffer->beginRenderPass(
+                vk::RenderPassBeginInfo(
+                    renderPass.get(), 
+                    frameBuffer.get(), 
+                    renderArea, 
+                    clearColor), 
+                vk::SubpassContents::eInline);
+
+        commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, graphicsPipeline.get());
+        commandBuffer->draw(3,1,0,0);
+        commandBuffer->endRenderPass();
+        commandBuffer->end();
+    } 
+
+    return std::make_shared<VulkanRenderState>(
+        std::move(swapchain),
+        std::move(swapchainImageViews),
+        std::move(renderPass),
+        std::move(pipelineLayout),
+        std::move(graphicsPipeline),
+        std::move(frameBuffers),
+        std::move(commandPool),
+        std::move(commandBuffers)
+    );
 }
 
 void drawFrame(){
