@@ -7,6 +7,29 @@
 
 #include"GlfwStuff.cpp"
 
+auto createDebugMessanger(
+        vk::UniqueInstance const & instance, 
+        PFN_vkDebugUtilsMessengerCallbackEXT debugCallback)
+{
+    return instance->createDebugUtilsMessengerEXTUnique(
+        vk::DebugUtilsMessengerCreateInfoEXT(
+            {}, 
+            vk::DebugUtilsMessageSeverityFlagBitsEXT::eError | vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning, 
+            vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation, 
+            debugCallback),
+        nullptr, 
+        vk::DispatchLoaderDynamic(instance.get(), vkGetInstanceProcAddr));
+}
+
+auto createSurface(vk::UniqueInstance const & instance, UniqueGlfwWindow const & window){
+    VkSurfaceKHR surface;
+    if(glfwCreateWindowSurface(instance.get(), window.get(), nullptr, &surface) != VK_SUCCESS)
+        throw std::runtime_error("unalbe to create window surface");
+    
+    return vk::UniqueSurfaceKHR(
+            vk::SurfaceKHR(surface), 
+            vk::ObjectDestroy<vk::Instance, vk::DispatchLoaderStatic>(instance.get()));
+}
 
 auto findQueueIndices(vk::UniqueSurfaceKHR const & surface, vk::PhysicalDevice const & gpu){
     std::optional<int> graphicsIndex{std::nullopt};

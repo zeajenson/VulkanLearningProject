@@ -39,28 +39,9 @@ int main(){
 
     auto const instance = vk::createInstanceUnique(vk::InstanceCreateInfo({}, &appInfo, layers, extensions));
 
-    auto const mesenger = instance->createDebugUtilsMessengerEXTUnique(
-        vk::DebugUtilsMessengerCreateInfoEXT(
-            {}, 
-            vk::DebugUtilsMessageSeverityFlagBitsEXT::eError | vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning, 
-            vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation, 
-            debugCallback),
-        nullptr, 
-        vk::DispatchLoaderDynamic(instance.get(), vkGetInstanceProcAddr));
+    auto const mesenger = createDebugMessanger(instance, debugCallback);
 
-
-    auto const surface = [&]{
-        VkSurfaceKHR surface;
-        
-        if(glfwCreateWindowSurface(instance.get(), window.get(), nullptr, &surface) != VK_SUCCESS){
-            std::cout << "unalbe to create window surface" << std::endl;
-            std::terminate();
-        }
-
-        return vk::UniqueSurfaceKHR(
-                vk::SurfaceKHR(surface), 
-                vk::ObjectDestroy<vk::Instance, vk::DispatchLoaderStatic>(instance.get()));
-    }();
+    auto const surface = createSurface(instance, window);
     
     auto const gpu = instance->enumeratePhysicalDevices().back();
 
