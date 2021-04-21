@@ -4,6 +4,7 @@
 
 #include<vulkan/vulkan.hpp>
 #include<GLFW/glfw3.h>
+#include<glm/glm.hpp>
 
 #include"GlfwStuff.cpp"
 
@@ -188,6 +189,40 @@ auto createRenderPass(vk::UniqueDevice const & device, vk::Format format){
                 1, &subpassDependency));
 }
 
+struct Vertex{
+    glm::vec2 position;
+    glm::vec3 color;
+};
+
+auto createVertexBindingDescritptions(){
+    
+    auto const bindingDescription = vk::VertexInputBindingDescription(0, sizeof(Vertex), vk::VertexInputRate::eVertex);
+
+    auto attributes = std::array<vk::VertexInputAttributeDescription, 2>();
+    auto & position = attributes[0];
+    auto & color = attributes[1];
+
+    position.binding = 0;
+    position.location = 0;
+    position.format = vk::Format::eR32G32Sfloat;
+    position.offset = offsetof(Vertex, position);
+
+    color.binding = 0;
+    color.location = 1;
+    color.format = vk::Format::eR32G32B32Sfloat;
+    color.offset = offsetof(Vertex, color);
+
+    struct{
+        std::array<vk::VertexInputBindingDescription, 1> bindingDescriptions;
+        std::array<vk::VertexInputAttributeDescription, 2> attributeDescriptions;
+    } bindings {
+        std::array{bindingDescription},
+        attributes
+    };
+
+    return bindings;
+}
+
 auto createGraphicsPipeline(
         vk::UniqueDevice const & device, 
         vk::UniqueRenderPass const & renderPass, 
@@ -208,7 +243,12 @@ auto createGraphicsPipeline(
 
     auto const shaderStages = std::vector{vertShaderStageInfo, fragShaderStageInfo};
 
-    auto const vertexInputInfo = vk::PipelineVertexInputStateCreateInfo();
+    auto const [
+        bindingDescriptions,
+        attributeDescriptions
+    ] = createVertexBindingDescritptions();
+
+    auto const vertexInputInfo = vk::PipelineVertexInputStateCreateInfo({}, bindingDescriptions, attributeDescriptions);
 
     auto const inputAssemblyInfo = vk::PipelineInputAssemblyStateCreateInfo({}, vk::PrimitiveTopology::eTriangleList, VK_FALSE);
 
@@ -322,7 +362,109 @@ auto createSynchronization(vk::UniqueDevice const & device, int32_t maxFramesInF
     return frameSync;
 }
 
+auto findMemoryType(vk::PhysicalDevice const & gpu, uint32_t memoryBitsRequirement, vk::MemoryPropertyFlags properties){
+    auto memoryProperties = gpu.getMemoryProperties();
 
+    for(uint32_t memoryIndex = 0; memoryIndex < memoryProperties.memoryTypeCount; memoryIndex++){
+        if(memoryBitsRequirement & (1 << memoryIndex) && (memoryProperties.memoryTypes[memoryIndex].propertyFlags & properties) == properties)
+            return memoryIndex;
+    }
+
+    throw std::runtime_error("failed to find memoryType");
+}
+
+auto createBuffer(
+        vk::UniqueDevice const & device,
+        vk::PhysicalDevice const & gpu,
+        vk::DeviceSize const size, 
+        vk::BufferUsageFlags const usage, 
+        vk::MemoryPropertyFlags properties)
+{
+    auto buffer = device.get().createBufferUnique(vk::BufferCreateInfo({}, size, usage, vk::SharingMode::eExclusive));
+
+    auto const memoryRequirements = device.get().getBufferMemoryRequirements(buffer.get());
+
+    auto memory = device.get().allocateMemoryUnique(vk::MemoryAllocateInfo(
+                memoryRequirements.size, 
+                findMemoryType(gpu, memoryRequirements.memoryTypeBits, properties)));
+
+    device.get().bindBufferMemory(buffer.get(), memory.get(), 0);
+
+    struct handles{
+        vk::UniqueBuffer buffer;
+        vk::UniqueDeviceMemory bufferMemory;
+    };
+
+    return handles{
+        std::move(buffer),
+        std::move(memory)
+    };
+}
+
+auto copyBuffer(
+        vk::UniqueDevice const & device,
+        vk::UniqueCommandPool const & commandPool,
+        vk::Queue const & graphicsQueue,
+        vk::UniqueBuffer const & srcBuffer, 
+        vk::UniqueBuffer const & dstBuffer, 
+        vk::DeviceSize size)
+{
+    auto commandBuffer = std::move(device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo(
+                commandPool.get(), 
+                vk::CommandBufferLevel::ePrimary, 
+                1)).back());
+
+    commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
+    commandBuffer->copyBuffer(
+            srcBuffer.get(), 
+            srcBuffer.get(), 
+            std::array{vk::BufferCopy({}, {}, size)});
+
+    commandBuffer->end();
+    graphicsQueue.submit(std::array{vk::SubmitInfo({}, {}, {}, 1, &commandBuffer.get())});
+    device->waitIdle();
+}
+
+auto createVertexBuffer(
+        vk::UniqueDevice const & device, 
+        vk::PhysicalDevice const & gpu, 
+        vk::UniqueCommandPool const & commandPool,
+        vk::Queue const & graphicsQueue,
+        std::vector<Vertex> const & vertices)
+{ 
+    auto const bufferSize = vk::DeviceSize(sizeof(Vertex) * vertices.size());
+
+    auto const [
+        hostBuffer,
+        hostBufferMemory
+    ] = createBuffer(
+            device,
+            gpu,
+            bufferSize, 
+            vk::BufferUsageFlagBits::eTransferSrc, 
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+    //TODO: load vertices directly into staging memory, instead of allocating it twice.
+    auto const memory = device->mapMemory(hostBufferMemory.get(), 0, bufferSize, {});
+    memcpy(memory, vertices.data(), (size_t)bufferSize);
+    device->unmapMemory(hostBufferMemory.get());
+
+    auto bufferHandles = createBuffer(
+            device,
+            gpu,
+            bufferSize, 
+            vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer, 
+            vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+    copyBuffer(device, commandPool, graphicsQueue, hostBuffer, bufferHandles.buffer, bufferSize);
+
+    return bufferHandles;
+}
+
+void drawFrame(){
+
+}
 
 struct VulkanRenderState{
     vk::UniqueSwapchainKHR swapchain;
@@ -333,6 +475,8 @@ struct VulkanRenderState{
     std::vector<vk::UniqueFramebuffer> frameBuffers;
     vk::UniqueCommandPool commandPool;
     std::vector<vk::UniqueCommandBuffer> commandBuffers;
+    vk::UniqueBuffer vertexBuffer;
+    vk::UniqueDeviceMemory vertexBufferMemory;
 };
 
 auto createVulkanRenderState(
@@ -383,6 +527,20 @@ auto createVulkanRenderState(
 
     auto commandPool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo({}, graphicsIndex));
 
+    auto const vertices = std::vector<Vertex>{
+        {{0, 0.5}, {1,0,1}},
+        {{-0.5, 0}, {0,1,0}},
+        {{0.5, 0}, {1,0,1}}
+    };
+
+    auto const graphicsQueue = device->getQueue(graphicsIndex,0);
+
+    auto [
+        vertexBuffer,
+        vertexBufferMemory
+    ] = createVertexBuffer(device, gpu, commandPool, graphicsQueue, vertices);
+
+
     auto commandBuffers = device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo(
                 commandPool.get(), 
                 vk::CommandBufferLevel::ePrimary, 
@@ -411,7 +569,11 @@ auto createVulkanRenderState(
         commandBuffer->setScissor(0, scissor);
 
         commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, graphicsPipeline.get());
-        commandBuffer->draw(3,1,0,0);
+
+        vk::DeviceSize offsets[] = {0};
+        commandBuffer->bindVertexBuffers(0, 1, &vertexBuffer.get(), offsets);
+
+        commandBuffer->draw(static_cast<uint32_t>(vertices.size()),1,0,0);
         commandBuffer->endRenderPass();
         commandBuffer->end();
     }
@@ -425,13 +587,15 @@ auto createVulkanRenderState(
         std::move(graphicsPipeline),
         std::move(frameBuffers),
         std::move(commandPool),
-        std::move(commandBuffers)
+        std::move(commandBuffers),
+        std::move(vertexBuffer),
+        std::move(vertexBufferMemory)
     );
 }
 
-
-void drawFrame(){
+auto createCommandBuffers(){
 
 }
+
 
 

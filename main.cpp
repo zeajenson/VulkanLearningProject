@@ -70,6 +70,7 @@ int main(){
 
     auto renderState = createVulkanRenderState(device, gpu, surface, window, graphicsIndex, presentIndex);
     auto frameResized = false;
+
     
     glfwSetWindowUserPointer(window.get(), &frameResized);
     glfwSetFramebufferSizeCallback(window.get(), [](GLFWwindow * window, int width, int height){
@@ -82,7 +83,6 @@ int main(){
     auto currentFrame = 0;
 
     auto const presentQueue = device->getQueue(presentIndex, 0);
-
 
 
     auto drawFrame = [&]{
@@ -107,7 +107,7 @@ int main(){
             if(device->waitForFences(1, &imagesInFlight[imageIndex.value], VK_TRUE, UINT64_MAX) != vk::Result::eSuccess)
                 std::cout << "Unable to wait for image in flight fence: " << imageIndex.value << std::endl;
 
-        //TODO: this is a weird hack instead two different indapendendet sets of fences should exist for sync.
+        //TODO: instead two different indapendendet sets of fences should exist for sync.
         imagesInFlight[imageIndex.value] = perFrameSync[currentFrame].inFlightFence.get();
 
         vk::Semaphore waitSemaphores[] = {perFrameSync[currentFrame].imageAvailableSemaphore.get()};
