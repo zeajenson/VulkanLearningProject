@@ -417,8 +417,8 @@ auto copyBuffer(
     commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
     commandBuffer->copyBuffer(
-            srcBuffer.get(), 
-            srcBuffer.get(), 
+            srcBuffer.get(),
+            dstBuffer.get(), 
             std::array{vk::BufferCopy({}, {}, size)});
 
     commandBuffer->end();
@@ -457,13 +457,15 @@ auto createVertexBuffer(
             vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer, 
             vk::MemoryPropertyFlagBits::eDeviceLocal);
 
-    copyBuffer(device, commandPool, graphicsQueue, hostBuffer, bufferHandles.buffer, bufferSize);
+    copyBuffer(
+            device, 
+            commandPool, 
+            graphicsQueue, 
+            hostBuffer, 
+            bufferHandles.buffer, 
+            bufferSize);
 
     return bufferHandles;
-}
-
-void drawFrame(){
-
 }
 
 struct VulkanRenderState{
@@ -577,7 +579,6 @@ auto createVulkanRenderState(
         commandBuffer->endRenderPass();
         commandBuffer->end();
     }
-     
 
     return std::make_shared<VulkanRenderState>(
         std::move(swapchain),
