@@ -468,6 +468,49 @@ auto createVertexBuffer(
     return bufferHandles;
 }
 
+auto createIndexBuffer(
+        vk::UniqueDevice const & device, 
+        vk::PhysicalDevice const & gpu, 
+        vk::UniqueCommandPool const & commandPool,
+        vk::Queue const & graphicsQueue,
+        std::vector<uint16_t> const & indices)
+{
+    auto const bufferSize = vk::DeviceSize(sizeof(Vertex) * indices.size());
+
+    auto const [
+        hostBuffer,
+        hostBufferMemory
+    ] = createBuffer(
+            device,
+            gpu,
+            bufferSize, 
+            vk::BufferUsageFlagBits::eTransferSrc, 
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+    //TODO: load indices directly into staging memory, instead of allocating it twice.
+    auto const memory = device->mapMemory(hostBufferMemory.get(), 0, bufferSize, {});
+    memcpy(memory, indices.data(), (size_t)bufferSize);
+    device->unmapMemory(hostBufferMemory.get());
+
+    auto bufferHandles = createBuffer(
+            device,
+            gpu,
+            bufferSize, 
+            vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer, 
+            vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+    copyBuffer(
+            device, 
+            commandPool, 
+            graphicsQueue, 
+            hostBuffer, 
+            bufferHandles.buffer, 
+            bufferSize);
+
+    return bufferHandles;
+}
+        
+
 struct VulkanRenderState{
     vk::UniqueSwapchainKHR swapchain;
     std::vector<vk::UniqueImageView> swapchainImageViews;
@@ -479,6 +522,8 @@ struct VulkanRenderState{
     std::vector<vk::UniqueCommandBuffer> commandBuffers;
     vk::UniqueBuffer vertexBuffer;
     vk::UniqueDeviceMemory vertexBufferMemory;
+    vk::UniqueBuffer indexBuffer;
+    vk::UniqueDeviceMemory indexBufferMemory;
 };
 
 auto createVulkanRenderState(
@@ -491,7 +536,6 @@ auto createVulkanRenderState(
 {
     
     device->waitIdle();
-
 
     auto const capabilities = gpu.getSurfaceCapabilitiesKHR(surface.get());
 
@@ -532,7 +576,12 @@ auto createVulkanRenderState(
     auto const vertices = std::vector<Vertex>{
         {{0, 0.5}, {1,0,1}},
         {{-0.5, 0}, {0,1,0}},
-        {{0.5, 0}, {1,0,1}}
+        {{0.5, 0}, {1,0,1}},
+        {{1, 1}, {1,1,0}}
+    };
+
+    auto const indices = std::vector<uint16_t>{
+        0, 1, 2, 2, 3, 0
     };
 
     auto const graphicsQueue = device->getQueue(graphicsIndex,0);
@@ -541,6 +590,11 @@ auto createVulkanRenderState(
         vertexBuffer,
         vertexBufferMemory
     ] = createVertexBuffer(device, gpu, commandPool, graphicsQueue, vertices);
+
+    auto [
+        indexBuffer,
+        indexBufferMemory
+    ] = createIndexBuffer(device, gpu, commandPool, graphicsQueue, indices);
 
 
     auto commandBuffers = device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo(
@@ -574,8 +628,10 @@ auto createVulkanRenderState(
 
         vk::DeviceSize offsets[] = {0};
         commandBuffer->bindVertexBuffers(0, 1, &vertexBuffer.get(), offsets);
+        commandBuffer->bindIndexBuffer(indexBuffer.get(), 0, vk::IndexType::eUint16);
 
-        commandBuffer->draw(static_cast<uint32_t>(vertices.size()),1,0,0);
+        //commandBuffer->draw(static_cast<uint32_t>(vertices.size()),1,0,0);
+        commandBuffer->drawIndexed(indices.size(), 1, 0, 0, 0);
         commandBuffer->endRenderPass();
         commandBuffer->end();
     }
@@ -590,7 +646,9 @@ auto createVulkanRenderState(
         std::move(commandPool),
         std::move(commandBuffers),
         std::move(vertexBuffer),
-        std::move(vertexBufferMemory)
+        std::move(vertexBufferMemory),
+        std::move(indexBuffer),
+        std::move(indexBufferMemory)
     );
 }
 
