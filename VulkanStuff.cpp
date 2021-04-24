@@ -5,6 +5,7 @@
 #include<vulkan/vulkan.hpp>
 #include<GLFW/glfw3.h>
 #include<glm/glm.hpp>
+#include<glm/gtc/matrix_transform.hpp>
 
 #include"GlfwStuff.cpp"
 
@@ -61,7 +62,6 @@ auto findQueueIndices(vk::UniqueSurfaceKHR const & surface, vk::PhysicalDevice c
 
 auto createExtent(vk::SurfaceCapabilitiesKHR const & capabilities, UniqueGlfwWindow const & window){
     if(capabilities.currentExtent.width != UINT32_MAX) return capabilities.currentExtent;
-    
     
     auto const & minImageExtent = capabilities.minImageExtent;
     auto const & maxImageExtent = capabilities.maxImageExtent;
@@ -152,9 +152,9 @@ auto loadShader(std::filesystem::path path){
     return buffer;
 }
 
-auto createShaderModule(std::filesystem::path path, vk::UniqueDevice const & device){
+auto createShaderModule(std::filesystem::path path, vk::Device const device){
     auto const shaderCode = loadShader(path);
-    return device->createShaderModuleUnique(vk::ShaderModuleCreateInfo({}, 
+    return device.createShaderModuleUnique(vk::ShaderModuleCreateInfo({}, 
             shaderCode.size(), 
             reinterpret_cast<uint32_t const *>(shaderCode.data())));
 }
@@ -223,12 +223,29 @@ auto createVertexBindingDescritptions(){
     return bindings;
 }
 
+struct UniformBufferObject{
+    glm::mat4 model;
+    glm::mat4 view;
+    glm::mat4 proj;
+}; 
+
+auto create_descriptor_set_layout(vk::Device const device) noexcept{
+    auto const uboBinding = vk::DescriptorSetLayoutBinding(
+            0, 
+            vk::DescriptorType::eUniformBuffer, 
+            1,
+            vk::ShaderStageFlagBits::eVertex,
+            nullptr);
+
+    return device.createDescriptorSetLayoutUnique(vk::DescriptorSetLayoutCreateInfo({}, 1, &uboBinding));
+}
+
 auto createGraphicsPipeline(
-        vk::UniqueDevice const & device, 
-        vk::UniqueRenderPass const & renderPass, 
-        vk::UniquePipelineLayout const & layout,
-        vk::Extent2D const & swapchainExtent)
-{
+        vk::Device const & device, 
+        vk::RenderPass const & renderPass, 
+        vk::PipelineLayout const & layout,
+        vk::Extent2D const & swapchainExtent) 
+noexcept {
     auto const vertShaderModule = createShaderModule("./vert.spv", device);
     auto const vertShaderStageInfo = vk::PipelineShaderStageCreateInfo({}, 
             vk::ShaderStageFlagBits::eVertex, 
@@ -262,7 +279,7 @@ auto createGraphicsPipeline(
             VK_FALSE, 
             vk::PolygonMode::eFill, 
             vk::CullModeFlagBits::eBack, 
-            vk::FrontFace::eClockwise, 
+            vk::FrontFace::eCounterClockwise, 
             VK_FALSE);
 
     auto const multisampleing = vk::PipelineMultisampleStateCreateInfo({},
@@ -297,25 +314,27 @@ auto createGraphicsPipeline(
     };
     auto const dynamicState = vk::PipelineDynamicStateCreateInfo({}, dynamicStates);
 
-    auto const createInfos = std::array{
-        vk::GraphicsPipelineCreateInfo({}, 
-                shaderStages, 
-                &vertexInputInfo, 
-                &inputAssemblyInfo, 
-                nullptr,
-                &viewportStateInfo,
-                &rasterizer,
-                &multisampleing,
-                nullptr,
-                &colorBlending,
-                &dynamicState,
-                layout.get(),
-                renderPass.get(),
-                0) 
-    };
+    auto const pipelineCreateInfo = [&]{
+        auto pipelineCreateInfo = vk::GraphicsPipelineCreateInfo{};
+        pipelineCreateInfo
+            .setStages(shaderStages)
+            .setPVertexInputState(&vertexInputInfo)
+            .setPInputAssemblyState(&inputAssemblyInfo)
+            .setPViewportState(&viewportStateInfo)
+            .setPRasterizationState(&rasterizer)
+            .setPMultisampleState(&multisampleing)
+            .setPColorBlendState(&colorBlending)
+            .setPDynamicState(&dynamicState)
+            .setLayout(layout)
+            .setRenderPass(renderPass);
+
+        return pipelineCreateInfo;
+    }();
+
+    auto const createInfos = std::array{pipelineCreateInfo};
 
     //TODO: check return result and see why creation may have failed.
-    return device->createGraphicsPipelinesUnique({}, createInfos).value;
+    return device.createGraphicsPipelinesUnique({}, createInfos).value;
 }
 
 auto createFrameBuffers(
@@ -509,21 +528,80 @@ auto createIndexBuffer(
 
     return bufferHandles;
 }
+
+auto createUniformBuffers(
+        vk::UniqueDevice const & device, 
+        vk::PhysicalDevice const & gpu, 
+        vk::UniqueCommandPool const & commandPool,
+        vk::Queue const & graphicsQueue,
+        size_t swapchainImageCount)
+{
+    auto uniformBuffers = std::vector<std::pair<vk::UniqueBuffer, vk::UniqueDeviceMemory>>(); 
+    uniformBuffers.reserve(swapchainImageCount);
+
+    for(size_t i = 0; i < swapchainImageCount; i++){
+        auto const bufferSize = vk::DeviceSize(sizeof(UniformBufferObject));
+
+        auto [
+            buffer,
+            memory
+        ] = createBuffer(
+                device, 
+                gpu, 
+                bufferSize, 
+                vk::BufferUsageFlagBits::eUniformBuffer, 
+                vk::MemoryPropertyFlagBits::eHostVisible 
+                | vk::MemoryPropertyFlagBits::eHostCoherent);
         
+        uniformBuffers.push_back({
+                std::move(buffer),
+                std::move(memory)
+            });
+    }
+
+    return uniformBuffers;
+}
+
+auto create_descriptor_pool(vk::Device const device, uint32_t imageCount) noexcept{
+    auto const poolSize = vk::DescriptorPoolSize(
+            vk::DescriptorType::eUniformBuffer,
+            imageCount);
+
+    auto const poolInfo = vk::DescriptorPoolCreateInfo(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, imageCount, 1, &poolSize);
+    
+    return device.createDescriptorPoolUnique(poolInfo);
+}
+
+auto create_descriptor_sets(
+        vk::Device const device, 
+        vk::DescriptorPool const pool, 
+        uint32_t imageCount, 
+        vk::DescriptorSetLayout const layout) noexcept
+{
+    auto const layouts = std::vector(imageCount, layout);
+    
+    return device.allocateDescriptorSetsUnique(vk::DescriptorSetAllocateInfo(pool, layouts));
+}
+
 
 struct VulkanRenderState{
     vk::UniqueSwapchainKHR swapchain;
     std::vector<vk::UniqueImageView> swapchainImageViews;
     vk::UniqueRenderPass renderPass;
+    vk::UniqueDescriptorSetLayout descriptorSetLayout;
     vk::UniquePipelineLayout pipelineLayout;
     vk::UniquePipeline graphicsPipeline;
     std::vector<vk::UniqueFramebuffer> frameBuffers;
     vk::UniqueCommandPool commandPool;
+    vk::UniqueDescriptorPool descriptorPool;
+    std::vector<vk::UniqueDescriptorSet> descriptorSets;
     std::vector<vk::UniqueCommandBuffer> commandBuffers;
     vk::UniqueBuffer vertexBuffer;
     vk::UniqueDeviceMemory vertexBufferMemory;
     vk::UniqueBuffer indexBuffer;
     vk::UniqueDeviceMemory indexBufferMemory;
+    std::vector<std::pair<vk::UniqueBuffer, vk::UniqueDeviceMemory>> uniformBuffers;
+    vk::Extent2D swapchainExtent;
 };
 
 auto createVulkanRenderState(
@@ -566,18 +644,37 @@ auto createVulkanRenderState(
             surfaceFormat);
 
     auto renderPass = createRenderPass(device, swapchainImageFormat);
-    auto pipelineLayout = device->createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo());
-    auto graphicsPipeline = std::move(createGraphicsPipeline(device, renderPass, pipelineLayout, extent).back());
+    auto descriptorSetLayout = create_descriptor_set_layout(device.get());
+    auto pipelineLayout = device->createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo({}, 
+                1,
+                &descriptorSetLayout.get()));
+
+    auto graphicsPipeline = std::move(createGraphicsPipeline(
+                device.get(), 
+                renderPass.get(), 
+                pipelineLayout.get(), 
+                extent)
+            .back());
 
     auto frameBuffers = createFrameBuffers(device, swapchainImageViews, renderPass, extent);
 
     auto commandPool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo({}, graphicsIndex));
 
+    auto descriptorPool = create_descriptor_pool(device.get(), swapchainImageViews.size());
+
+    auto descriptorSets = create_descriptor_sets(
+            device.get(), 
+            descriptorPool.get(), 
+            swapchainImageViews.size(), 
+            descriptorSetLayout.get());
+
+
+
     auto const vertices = std::vector<Vertex>{
-        {{0, 0.5}, {1,0,1}},
-        {{-0.5, 0}, {0,1,0}},
-        {{0.5, 0}, {1,0,1}},
-        {{1, 1}, {1,1,0}}
+        {{0,    0.5},   {1,0,1}},
+        {{-0.5, 0},     {0,1,0}},
+        {{0.5,  0},     {1,0,1}},
+        {{1,    1},     {1,1,0}}
     };
 
     auto const indices = std::vector<uint16_t>{
@@ -596,6 +693,28 @@ auto createVulkanRenderState(
         indexBufferMemory
     ] = createIndexBuffer(device, gpu, commandPool, graphicsQueue, indices);
 
+    auto uniformBuffers = createUniformBuffers(device, gpu, commandPool, graphicsQueue, swapchainImageViews.size());
+
+
+    for(size_t i = 0; i < swapchainImageViews.size(); i++){
+        auto const bufferInfo = vk::DescriptorBufferInfo(
+                uniformBuffers[i].first.get(), 
+                0, 
+                sizeof(UniformBufferObject));
+
+        auto const descriptorWrite = vk::WriteDescriptorSet(
+                descriptorSets[i].get(), 
+                0, 
+                0,
+                1, 
+                vk::DescriptorType::eUniformBuffer, 
+                nullptr, 
+                &bufferInfo, 
+                nullptr);
+
+        device->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
+    }
+
 
     auto commandBuffers = device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo(
                 commandPool.get(), 
@@ -606,7 +725,6 @@ auto createVulkanRenderState(
         //TODO: just zip these together.
         auto const & commandBuffer = commandBuffers[i];
         auto const & frameBuffer = frameBuffers[i];
-
         commandBuffer->begin(vk::CommandBufferBeginInfo());
         auto const clearColor = std::vector{vk::ClearValue(vk::ClearColorValue(std::array{0.0f, 0.0f, 0.0f ,0.0f}))};
         auto const renderArea = vk::Rect2D({0,0},extent);
@@ -630,31 +748,77 @@ auto createVulkanRenderState(
         commandBuffer->bindVertexBuffers(0, 1, &vertexBuffer.get(), offsets);
         commandBuffer->bindIndexBuffer(indexBuffer.get(), 0, vk::IndexType::eUint16);
 
+        commandBuffer->bindDescriptorSets(
+                vk::PipelineBindPoint::eGraphics, 
+                pipelineLayout.get(), 
+                0, 
+                1, 
+                &descriptorSets[i].get(), 
+                0, 
+                nullptr);
+
         //commandBuffer->draw(static_cast<uint32_t>(vertices.size()),1,0,0);
         commandBuffer->drawIndexed(indices.size(), 1, 0, 0, 0);
         commandBuffer->endRenderPass();
         commandBuffer->end();
+
     }
 
-    return std::make_shared<VulkanRenderState>(
+    return std::make_unique<VulkanRenderState>(
         std::move(swapchain),
         std::move(swapchainImageViews),
         std::move(renderPass),
+        std::move(descriptorSetLayout),
         std::move(pipelineLayout),
         std::move(graphicsPipeline),
         std::move(frameBuffers),
         std::move(commandPool),
+        std::move(descriptorPool),
+        std::move(descriptorSets),
         std::move(commandBuffers),
         std::move(vertexBuffer),
         std::move(vertexBufferMemory),
         std::move(indexBuffer),
-        std::move(indexBufferMemory)
+        std::move(indexBufferMemory),
+        std::move(uniformBuffers),
+        extent
     );
 }
 
-auto createCommandBuffers(){
+void update_uniformBuffer(
+        vk::Device const device,
+        vk::Buffer const uniformBuffer, 
+        vk::DeviceMemory const unformBufferMemory,
+        vk::Extent2D const swapchainExtent)
+{
+    static auto startTime = std::chrono::high_resolution_clock::now();
 
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+
+    auto ubo = UniformBufferObject{};
+    
+    ubo.model = glm::rotate(
+            glm::mat4(1.0f), 
+            time * glm::radians(90.0f), 
+            glm::vec3(0.0f, 0.0f, 1.0f));
+    
+    ubo.view = glm::lookAt(
+            glm::vec3(2.0f,2.0f,2.0f), 
+            glm::vec3(0.0f,0.0f,0.0f),
+            glm::vec3(0.0f,0.0f,1.0f));
+
+    ubo.proj = glm::perspective(
+            glm::radians(45.0f), 
+            (float)swapchainExtent.width/ (float)swapchainExtent.height,
+            0.1f,
+            10.0f);
+
+    ubo.proj[1][1] *= -1;
+
+    auto data = device.mapMemory(unformBufferMemory, 0, sizeof(ubo));
+    memcpy(data, &ubo, sizeof(ubo));
+    device.unmapMemory(unformBufferMemory);
 }
-
 
 

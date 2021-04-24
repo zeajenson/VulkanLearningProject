@@ -16,7 +16,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
     void* pUserData) {
 
-    std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
+    std::cout << "validation layer: " << pCallbackData->pMessage << "\n\n";
 
     return VK_FALSE;
 }
@@ -106,9 +106,18 @@ int main(){
         if(imagesInFlight[imageIndex.value])
             if(device->waitForFences(1, &imagesInFlight[imageIndex.value], VK_TRUE, UINT64_MAX) != vk::Result::eSuccess)
                 std::cout << "Unable to wait for image in flight fence: " << imageIndex.value << std::endl;
-
         //TODO: instead two different indapendendet sets of fences should exist for sync.
         imagesInFlight[imageIndex.value] = perFrameSync[currentFrame].inFlightFence.get();
+
+
+        auto const & bufferHandles = renderState->uniformBuffers[imageIndex.value];
+
+        update_uniformBuffer(
+                device.get(), 
+                bufferHandles.first.get(), 
+                bufferHandles.second.get(), 
+                renderState->swapchainExtent);
+
 
         vk::Semaphore waitSemaphores[] = {perFrameSync[currentFrame].imageAvailableSemaphore.get()};
         vk::PipelineStageFlags waitDstStageMasks[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
