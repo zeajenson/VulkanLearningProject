@@ -749,14 +749,16 @@ auto create_image(
 
     struct Stuff{
         vk::UniqueBuffer stagingBuffer;
+        vk::UniqueDeviceMemory stagingBufferMemory;
         vk::UniqueImage image;
         vk::UniqueDeviceMemory imageMemory;
     };
 
     return Stuff{
         std::move(buffer),
+        std::move(memory),
         std::move(image),
-        std::move(memory)
+        std::move(textureMemory)
     };
 }
 
@@ -776,8 +778,9 @@ auto create_texture_image(
 
     auto [
         stagingBuffer,
+        stagingBufferMemory,
         image,
-        bufferMemory
+        imageMemory
     ] = create_image(
             device,
             gpu,
@@ -787,30 +790,32 @@ auto create_texture_image(
             | vk::ImageUsageFlagBits::eSampled, 
             width, height,
             std::move(pixels));
+    {
+        auto commandScope = CommandScope(device, commandPool, graphicsQueue);
+        transition_image_layout(
+                device,
+                commandScope.commandBuffer,
+                image, 
+                vk::Format::eR8G8B8A8Srgb, 
+                vk::ImageLayout::eUndefined, 
+                vk::ImageLayout::eTransferDstOptimal);
 
-    auto commandScope = CommandScope(device, commandPool, graphicsQueue);
+        copy_buffer_to_image(commandScope.commandBuffer, stagingBuffer, image, width, height);
 
-    transition_image_layout(
-            device,
-            commandScope.commandBuffer,
-            image, 
-            vk::Format::eR8G8B8A8Srgb, 
-            vk::ImageLayout::eUndefined, 
-            vk::ImageLayout::eTransferDstOptimal);
+        transition_image_layout(
+                device, 
+                commandScope.commandBuffer,
+                image, 
+                vk::Format::eR8G8B8A8Srgb, 
+                vk::ImageLayout::eTransferDstOptimal, 
+                vk::ImageLayout::eShaderReadOnlyOptimal);
+    }
 
-    copy_buffer_to_image(commandScope.commandBuffer, stagingBuffer, image, width, height);
 
-    transition_image_layout(
-            device, 
-            commandScope.commandBuffer,
-            image, 
-            vk::Format::eR8G8B8A8Srgb, 
-            vk::ImageLayout::eTransferDstOptimal, 
-            vk::ImageLayout::eShaderReadOnlyOptimal);
 
     return ImageHandles{
         std::move(image),
-        std::move(bufferMemory)
+        std::move(imageMemory)
     };
 }
 
