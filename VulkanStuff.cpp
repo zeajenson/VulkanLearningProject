@@ -1,11 +1,15 @@
 #include<filesystem>
 #include<fstream>
 #include<vector>
+#include<iostream>
 
 #include<vulkan/vulkan.hpp>
 #include<GLFW/glfw3.h>
 #include<glm/glm.hpp>
 #include<glm/gtc/matrix_transform.hpp>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include<stb_image.h>
 
 #include"GlfwStuff.cpp"
 
@@ -420,6 +424,36 @@ auto createBuffer(
     };
 }
 
+struct CommandScope{
+    CommandScope(
+            vk::UniqueDevice const & device, 
+            vk::UniqueCommandPool const & commandPool, 
+            vk::Queue const & graphicsQueue): 
+        device(device),
+        graphicsQueue(graphicsQueue)
+    {
+
+        commandBuffer = std::move(device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo(
+                    commandPool.get(), 
+                    vk::CommandBufferLevel::ePrimary, 
+                    1)).back());
+
+        commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    }
+    ~CommandScope(){
+        commandBuffer->end();
+
+        graphicsQueue.submit(std::array{vk::SubmitInfo({}, {}, {}, 1, &commandBuffer.get())});
+
+        device->waitIdle();
+    }
+
+    vk::UniqueDevice const & device;
+    vk::Queue const & graphicsQueue;
+    vk::UniqueCommandBuffer commandBuffer;
+};
+
+
 auto copyBuffer(
         vk::UniqueDevice const & device,
         vk::UniqueCommandPool const & commandPool,
@@ -428,21 +462,12 @@ auto copyBuffer(
         vk::UniqueBuffer const & dstBuffer, 
         vk::DeviceSize size)
 {
-    auto commandBuffer = std::move(device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo(
-                commandPool.get(), 
-                vk::CommandBufferLevel::ePrimary, 
-                1)).back());
-
-    commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
-    commandBuffer->copyBuffer(
+    auto commandScope = CommandScope(device, commandPool, graphicsQueue);
+    commandScope.commandBuffer->copyBuffer(
             srcBuffer.get(),
             dstBuffer.get(), 
             std::array{vk::BufferCopy({}, {}, size)});
 
-    commandBuffer->end();
-    graphicsQueue.submit(std::array{vk::SubmitInfo({}, {}, {}, 1, &commandBuffer.get())});
-    device->waitIdle();
 }
 
 auto createVertexBuffer(
@@ -583,6 +608,212 @@ auto create_descriptor_sets(
     return device.allocateDescriptorSetsUnique(vk::DescriptorSetAllocateInfo(pool, layouts));
 }
 
+struct ImageHandles{
+    vk::UniqueImage image;
+    vk::UniqueDeviceMemory memory;
+};
+
+auto transition_image_layout(
+        vk::UniqueDevice const & device,
+        vk::UniqueCommandBuffer const & commandBuffer,
+        vk::UniqueImage const & image,
+        vk::Format const & format,
+        vk::ImageLayout const & oldLayout,
+        vk::ImageLayout const & newLayout)
+{
+    auto barrier = vk::ImageMemoryBarrier(
+            {},
+            {},
+            oldLayout,
+            newLayout,
+            VK_QUEUE_FAMILY_IGNORED,
+            VK_QUEUE_FAMILY_IGNORED,
+            image.get(),
+            vk::ImageSubresourceRange(
+                vk::ImageAspectFlagBits::eColor,
+                0, 
+                1, 
+                0, 
+                1)
+            );
+
+    auto sourceStage = vk::PipelineStageFlags{};
+    auto destinationStage = vk::PipelineStageFlags{};
+
+    if(oldLayout == vk::ImageLayout::eUndefined and newLayout == vk::ImageLayout::eTransferDstOptimal){
+        barrier
+            .setSrcAccessMask({})
+            .setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
+
+        sourceStage = vk::PipelineStageFlagBits::eTopOfPipe;
+        destinationStage = vk::PipelineStageFlagBits::eTransfer;
+
+    }
+    else if(oldLayout == vk::ImageLayout::eTransferDstOptimal and newLayout == vk::ImageLayout::eShaderReadOnlyOptimal){
+        barrier
+            .setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+            .setDstAccessMask(vk::AccessFlagBits::eShaderRead);
+
+        sourceStage = vk::PipelineStageFlagBits::eTransfer;
+        destinationStage = vk::PipelineStageFlagBits::eFragmentShader;
+    }else{
+        std::cerr << "Unsoported layout transition" << std::endl;
+        std::terminate();
+    }
+
+    commandBuffer->pipelineBarrier(
+            sourceStage, 
+            destinationStage, 
+            {}, 
+            0, nullptr, 
+            0, nullptr, 
+            1, &barrier);
+}
+
+void copy_buffer_to_image(
+        vk::UniqueCommandBuffer const & commandBuffer,
+        vk::UniqueBuffer const & buffer, 
+        vk::UniqueImage const & image, 
+        uint32_t width, 
+        uint32_t height)
+{
+    auto region = vk::BufferImageCopy(
+            0, 
+            0, 
+            0, 
+            vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1), 
+            {0, 0, 0}, 
+            {width, height, 1});
+
+    commandBuffer->copyBufferToImage(
+            buffer.get(), 
+            image.get(), 
+            vk::ImageLayout::eTransferDstOptimal, 
+            1, &region);
+}
+
+struct pixelDeleter { void operator() (uint8_t * pixels){stbi_image_free(pixels);} };
+using pixelsRef = std::unique_ptr<uint8_t, pixelDeleter>;
+
+auto create_image(        
+        vk::UniqueDevice const & device,
+        vk::PhysicalDevice const & gpu,
+        vk::Format format,
+        vk::ImageTiling tiling,
+        vk::ImageUsageFlags usage,
+        int const width,
+        int const height,
+        pixelsRef pixels) 
+{
+    auto const size = vk::DeviceSize(width * height * 4);
+
+    auto [
+        buffer,
+        memory
+    ] = createBuffer(
+            device, 
+            gpu, 
+            size, 
+            vk::BufferUsageFlagBits::eTransferSrc, 
+            vk::MemoryPropertyFlagBits::eHostVisible 
+            | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+    auto data = device->mapMemory(memory.get(), 0, size);
+    memcpy(data, pixels.get(), static_cast<size_t>(size));
+    device->unmapMemory(memory.get());
+
+    auto const imageInfo = vk::ImageCreateInfo({}, 
+            vk::ImageType::e2D, 
+            format, 
+            vk::Extent3D(width, height, 1), 
+            1, 
+            1, 
+            vk::SampleCountFlagBits::e1, 
+            tiling,
+            usage,
+            vk::SharingMode::eExclusive, 
+            {}, 
+            vk::ImageLayout::eUndefined);
+
+    auto image = device->createImageUnique(imageInfo);
+
+    auto const memoryRequirements = device->getImageMemoryRequirements(image.get());
+    auto textureMemory = device->allocateMemoryUnique(vk::MemoryAllocateInfo(
+                memoryRequirements.size, 
+                findMemoryType(
+                    gpu, 
+                    memoryRequirements.memoryTypeBits, 
+                    vk::MemoryPropertyFlagBits::eDeviceLocal)));
+
+    device->bindImageMemory(image.get(), textureMemory.get(), 0);
+
+    struct Stuff{
+        vk::UniqueBuffer stagingBuffer;
+        vk::UniqueImage image;
+        vk::UniqueDeviceMemory imageMemory;
+    };
+
+    return Stuff{
+        std::move(buffer),
+        std::move(image),
+        std::move(memory)
+    };
+}
+
+auto create_texture_image(        
+        vk::UniqueDevice const & device,
+        vk::PhysicalDevice const & gpu,
+        vk::UniqueCommandPool const & commandPool,
+        vk::Queue const & graphicsQueue,
+        std::filesystem::path path) noexcept
+{
+    int width, height, channels;
+    auto const filename = path.c_str();
+    auto pixels = pixelsRef(stbi_load("./Image.png", &width, &height, &channels, STBI_rgb_alpha));
+    if(not pixels){
+        std::cerr << "No pixels for texture: " << filename << std::endl;
+    }
+
+    auto [
+        stagingBuffer,
+        image,
+        bufferMemory
+    ] = create_image(
+            device,
+            gpu,
+            vk::Format::eR8G8B8A8Srgb,
+            vk::ImageTiling::eOptimal,
+            vk::ImageUsageFlagBits::eTransferDst 
+            | vk::ImageUsageFlagBits::eSampled, 
+            width, height,
+            std::move(pixels));
+
+    auto commandScope = CommandScope(device, commandPool, graphicsQueue);
+
+    transition_image_layout(
+            device,
+            commandScope.commandBuffer,
+            image, 
+            vk::Format::eR8G8B8A8Srgb, 
+            vk::ImageLayout::eUndefined, 
+            vk::ImageLayout::eTransferDstOptimal);
+
+    copy_buffer_to_image(commandScope.commandBuffer, stagingBuffer, image, width, height);
+
+    transition_image_layout(
+            device, 
+            commandScope.commandBuffer,
+            image, 
+            vk::Format::eR8G8B8A8Srgb, 
+            vk::ImageLayout::eTransferDstOptimal, 
+            vk::ImageLayout::eShaderReadOnlyOptimal);
+
+    return ImageHandles{
+        std::move(image),
+        std::move(bufferMemory)
+    };
+}
+
 
 struct VulkanRenderState{
     vk::UniqueSwapchainKHR swapchain;
@@ -601,6 +832,7 @@ struct VulkanRenderState{
     vk::UniqueBuffer indexBuffer;
     vk::UniqueDeviceMemory indexBufferMemory;
     std::vector<std::pair<vk::UniqueBuffer, vk::UniqueDeviceMemory>> uniformBuffers;
+    ImageHandles imageHandles;
     vk::Extent2D swapchainExtent;
 };
 
@@ -695,6 +927,7 @@ auto createVulkanRenderState(
 
     auto uniformBuffers = createUniformBuffers(device, gpu, commandPool, graphicsQueue, swapchainImageViews.size());
 
+    auto imageHandles = create_texture_image(device, gpu, commandPool, graphicsQueue, "Image.jpg");
 
     for(size_t i = 0; i < swapchainImageViews.size(); i++){
         auto const bufferInfo = vk::DescriptorBufferInfo(
@@ -781,6 +1014,7 @@ auto createVulkanRenderState(
         std::move(indexBuffer),
         std::move(indexBufferMemory),
         std::move(uniformBuffers),
+        std::move(imageHandles),
         extent
     );
 }
