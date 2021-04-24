@@ -1,3 +1,6 @@
 [submodule "external/gil"]
 	path = external/gil
 	url = git@github.com:boostorg/gil.git
+[submodule "extern/stb"]
+	path = extern/stb
+	url = git@github.com:nothings/stb.git

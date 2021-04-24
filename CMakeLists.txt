@@ -11,4 +11,6 @@ find_package(glm REQUIRED FATAL_ERROR)
 
 add_executable(VulkanLearningProject main.cpp) 
 
+include_directories(extern/stb)
+
 target_link_libraries(VulkanLearningProject glfw Vulkan::Vulkan glm)
