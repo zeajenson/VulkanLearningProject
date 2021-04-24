@@ -9,6 +9,8 @@ find_package(Vulkan REQUIRED FATAL_ERROR)
 find_package(glfw3 3.3 REQUIRED FATAL_ERROR) 
 find_package(glm REQUIRED FATAL_ERROR)
 
+add_subdirectory(extern/gil)
+
 add_executable(VulkanLearningProject main.cpp) 
 
 target_link_libraries(VulkanLearningProject glfw Vulkan::Vulkan glm)

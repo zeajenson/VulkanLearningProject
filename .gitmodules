@@ -1,0 +1,3 @@
+[submodule "external/gil"]
+	path = external/gil
+	url = git@github.com:boostorg/gil.git
