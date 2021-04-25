@@ -121,6 +121,21 @@ auto createSwapchain(
     return device->createSwapchainKHRUnique(info);
 }
 
+auto create_image_view(vk::Device const device, vk::Image const image, vk::Format const format){
+    return device.createImageViewUnique(
+            vk::ImageViewCreateInfo({}, 
+                image, 
+                vk::ImageViewType::e2D, 
+                format, 
+                {}, 
+                vk::ImageSubresourceRange(
+                    vk::ImageAspectFlagBits::eColor, 
+                    0, 
+                    1, 
+                    0, 
+                    1)));
+}
+
 auto createSwapchainImageViews(
         vk::UniqueDevice const & device,
         std::vector<vk::Image> const & swapchainImages, 
@@ -131,17 +146,7 @@ auto createSwapchainImageViews(
     auto const swizIdent = vk::ComponentSwizzle::eIdentity;
     
     for(auto const & image: swapchainImages)
-        imageViews.push_back(device->createImageViewUnique(vk::ImageViewCreateInfo(
-            {}, 
-            image, 
-            vk::ImageViewType::e2D, 
-            surfaceFormat.format, 
-            vk::ComponentMapping(
-                swizIdent, 
-                swizIdent, 
-                swizIdent, 
-                swizIdent), 
-            vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1))));
+        imageViews.push_back(create_image_view(device.get(), image, surfaceFormat.format));
     
     return imageViews;
 }
@@ -196,15 +201,17 @@ auto createRenderPass(vk::UniqueDevice const & device, vk::Format format){
 struct Vertex{
     glm::vec2 position;
     glm::vec3 color;
+    glm::vec2 texCoord;
 };
 
 auto createVertexBindingDescritptions(){
     
     auto const bindingDescription = vk::VertexInputBindingDescription(0, sizeof(Vertex), vk::VertexInputRate::eVertex);
 
-    auto attributes = std::array<vk::VertexInputAttributeDescription, 2>();
+    auto attributes = std::array<vk::VertexInputAttributeDescription, 3>();
     auto & position = attributes[0];
     auto & color = attributes[1];
+    auto & texCoord = attributes[2];
 
     position.binding = 0;
     position.location = 0;
@@ -216,9 +223,15 @@ auto createVertexBindingDescritptions(){
     color.format = vk::Format::eR32G32B32Sfloat;
     color.offset = offsetof(Vertex, color);
 
+    texCoord.binding = 0;
+    texCoord.location = 2;
+    texCoord.format = vk::Format::eR32G32Sfloat;
+    texCoord.offset = offsetof(Vertex, texCoord);
+
+
     struct{
         std::array<vk::VertexInputBindingDescription, 1> bindingDescriptions;
-        std::array<vk::VertexInputAttributeDescription, 2> attributeDescriptions;
+        std::array<vk::VertexInputAttributeDescription, 3> attributeDescriptions;
     } bindings {
         std::array{bindingDescription},
         attributes
@@ -233,7 +246,7 @@ struct UniformBufferObject{
     glm::mat4 proj;
 }; 
 
-auto create_descriptor_set_layout(vk::Device const device) noexcept{
+auto create_descriptor_set_layout(vk::Device const device) {
     auto const uboBinding = vk::DescriptorSetLayoutBinding(
             0, 
             vk::DescriptorType::eUniformBuffer, 
@@ -241,7 +254,15 @@ auto create_descriptor_set_layout(vk::Device const device) noexcept{
             vk::ShaderStageFlagBits::eVertex,
             nullptr);
 
-    return device.createDescriptorSetLayoutUnique(vk::DescriptorSetLayoutCreateInfo({}, 1, &uboBinding));
+    auto const samplerBinding = vk::DescriptorSetLayoutBinding(
+            1,
+            vk::DescriptorType::eCombinedImageSampler,
+            1, vk::ShaderStageFlagBits::eFragment, 
+            nullptr);
+
+    auto const descriptorSets = std::array{uboBinding, samplerBinding};
+
+    return device.createDescriptorSetLayoutUnique(vk::DescriptorSetLayoutCreateInfo({}, descriptorSets));
 }
 
 auto createGraphicsPipeline(
@@ -249,7 +270,7 @@ auto createGraphicsPipeline(
         vk::RenderPass const & renderPass, 
         vk::PipelineLayout const & layout,
         vk::Extent2D const & swapchainExtent) 
-noexcept {
+{
     auto const vertShaderModule = createShaderModule("./vert.spv", device);
     auto const vertShaderStageInfo = vk::PipelineShaderStageCreateInfo({}, 
             vk::ShaderStageFlagBits::eVertex, 
@@ -453,7 +474,6 @@ struct CommandScope{
     vk::UniqueCommandBuffer commandBuffer;
 };
 
-
 auto copyBuffer(
         vk::UniqueDevice const & device,
         vk::UniqueCommandPool const & commandPool,
@@ -588,11 +608,20 @@ auto createUniformBuffers(
 }
 
 auto create_descriptor_pool(vk::Device const device, uint32_t imageCount) noexcept{
-    auto const poolSize = vk::DescriptorPoolSize(
-            vk::DescriptorType::eUniformBuffer,
-            imageCount);
+    auto const unieformBufferPoolSize = vk::DescriptorPoolSize(
+            vk::DescriptorType::eUniformBuffer, imageCount);
+    auto const textureSamplerPoolSize = vk::DescriptorPoolSize(
+            vk::DescriptorType::eCombinedImageSampler, imageCount);
 
-    auto const poolInfo = vk::DescriptorPoolCreateInfo(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, imageCount, 1, &poolSize);
+    auto const poolSizes = std::array{
+        unieformBufferPoolSize, 
+        textureSamplerPoolSize
+    };
+
+    auto const poolInfo = vk::DescriptorPoolCreateInfo(
+            vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 
+            imageCount, 
+            poolSizes);
     
     return device.createDescriptorPoolUnique(poolInfo);
 }
@@ -601,11 +630,46 @@ auto create_descriptor_sets(
         vk::Device const device, 
         vk::DescriptorPool const pool, 
         uint32_t imageCount, 
-        vk::DescriptorSetLayout const layout) noexcept
+        vk::DescriptorSetLayout const layout,
+        std::vector<std::pair<vk::UniqueBuffer, vk::UniqueDeviceMemory>> const & uniformBuffers,
+        vk::ImageView const textureImageView,
+        vk::Sampler const textureSampler)
 {
     auto const layouts = std::vector(imageCount, layout);
     
-    return device.allocateDescriptorSetsUnique(vk::DescriptorSetAllocateInfo(pool, layouts));
+    auto descriptorSets = device.allocateDescriptorSetsUnique(vk::DescriptorSetAllocateInfo(pool, layouts));
+
+    for(size_t i =0; i < imageCount; i++){
+
+        auto const uniformBuffer = uniformBuffers[i].first.get();
+        auto const bufferInfo = vk::DescriptorBufferInfo(uniformBuffer, 0, sizeof(UniformBufferObject));
+
+        auto const uniformWriteDescriptorSet = vk::WriteDescriptorSet(
+                descriptorSets[i].get(), 
+                0, 
+                0, 
+                vk::DescriptorType::eUniformBuffer, 
+                {}, bufferInfo, {});
+
+        auto const imageInfo = vk::DescriptorImageInfo(
+                textureSampler, 
+                textureImageView, 
+                vk::ImageLayout::eShaderReadOnlyOptimal);
+
+        auto const samplerWriteDescriptorSet = vk::WriteDescriptorSet(
+                descriptorSets[i].get(), 
+                1, 
+                0, 
+                vk::DescriptorType::eCombinedImageSampler, 
+                imageInfo, {}, {}); 
+
+        device.updateDescriptorSets({
+                    uniformWriteDescriptorSet,
+                    samplerWriteDescriptorSet
+                }, {});
+    }
+
+    return std::move(descriptorSets);
 }
 
 struct ImageHandles{
@@ -771,7 +835,7 @@ auto create_texture_image(
 {
     int width, height, channels;
     auto const filename = path.c_str();
-    auto pixels = pixelsRef(stbi_load("./Image.png", &width, &height, &channels, STBI_rgb_alpha));
+    auto pixels = pixelsRef(stbi_load("./Image.jpg", &width, &height, &channels, STBI_rgb_alpha));
     if(not pixels){
         std::cerr << "No pixels for texture: " << filename << std::endl;
     }
@@ -811,14 +875,28 @@ auto create_texture_image(
                 vk::ImageLayout::eShaderReadOnlyOptimal);
     }
 
-
-
     return ImageHandles{
         std::move(image),
         std::move(imageMemory)
     };
 }
 
+auto create_texture_sampler(vk::Device const device, vk::PhysicalDevice const gpu){
+    return device.createSamplerUnique(vk::SamplerCreateInfo()
+            .setMagFilter(vk::Filter::eLinear)
+            .setMinFilter(vk::Filter::eLinear)
+            .setAddressModeU(vk::SamplerAddressMode::eRepeat)
+            .setAddressModeV(vk::SamplerAddressMode::eRepeat)
+            .setAddressModeW(vk::SamplerAddressMode::eRepeat)
+            .setAnisotropyEnable(VK_TRUE)
+            .setMaxAnisotropy(gpu.getProperties().limits.maxSamplerAnisotropy)
+            .setBorderColor(vk::BorderColor::eIntOpaqueBlack)
+            .setUnnormalizedCoordinates(VK_FALSE)
+            .setCompareEnable(VK_FALSE)
+            .setCompareOp(vk::CompareOp::eAlways)
+            .setMipmapMode(vk::SamplerMipmapMode::eLinear)
+            .setMipLodBias(0).setMinLod(0).setMaxLod(0));
+}
 
 struct VulkanRenderState{
     vk::UniqueSwapchainKHR swapchain;
@@ -838,9 +916,12 @@ struct VulkanRenderState{
     vk::UniqueDeviceMemory indexBufferMemory;
     std::vector<std::pair<vk::UniqueBuffer, vk::UniqueDeviceMemory>> uniformBuffers;
     ImageHandles imageHandles;
+    vk::UniqueImageView textureImageView;
+    vk::UniqueSampler textureSampler;
     vk::Extent2D swapchainExtent;
 };
 
+[[nodiscard]] 
 auto createVulkanRenderState(
         vk::UniqueDevice const & device,
         vk::PhysicalDevice const & gpu,
@@ -899,19 +980,11 @@ auto createVulkanRenderState(
 
     auto descriptorPool = create_descriptor_pool(device.get(), swapchainImageViews.size());
 
-    auto descriptorSets = create_descriptor_sets(
-            device.get(), 
-            descriptorPool.get(), 
-            swapchainImageViews.size(), 
-            descriptorSetLayout.get());
-
-
-
     auto const vertices = std::vector<Vertex>{
-        {{0,    0.5},   {1,0,1}},
-        {{-0.5, 0},     {0,1,0}},
-        {{0.5,  0},     {1,0,1}},
-        {{1,    1},     {1,1,0}}
+        {{0,    0.5},   {1,0,1},    {1, 0}},
+        {{-0.5, 0},     {0,1,0},    {0, 0}},
+        {{0.5,  0},     {1,0,1},    {0, 1}},
+        {{1,    1},     {1,1,0},    {1, 1}}
     };
 
     auto const indices = std::vector<uint16_t>{
@@ -933,6 +1006,17 @@ auto createVulkanRenderState(
     auto uniformBuffers = createUniformBuffers(device, gpu, commandPool, graphicsQueue, swapchainImageViews.size());
 
     auto imageHandles = create_texture_image(device, gpu, commandPool, graphicsQueue, "Image.jpg");
+    auto textureImageView = create_image_view(device.get(), imageHandles.image.get(), vk::Format::eR8G8B8Srgb);
+    auto textureSampler = create_texture_sampler(device.get(), gpu);
+
+    auto descriptorSets = create_descriptor_sets(
+            device.get(), 
+            descriptorPool.get(), 
+            swapchainImageViews.size(), 
+            descriptorSetLayout.get(), 
+            uniformBuffers, 
+            textureImageView.get(), 
+            textureSampler.get());
 
     for(size_t i = 0; i < swapchainImageViews.size(); i++){
         auto const bufferInfo = vk::DescriptorBufferInfo(
@@ -1020,6 +1104,8 @@ auto createVulkanRenderState(
         std::move(indexBufferMemory),
         std::move(uniformBuffers),
         std::move(imageHandles),
+        std::move(textureImageView),
+        std::move(textureSampler),
         extent
     );
 }

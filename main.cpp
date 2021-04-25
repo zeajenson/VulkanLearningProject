@@ -58,6 +58,7 @@ int main(){
     
     //TODO: make sure the device supports this before going any further
     auto const deviceExtensions = std::vector<const char *>{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    //TODO: make sure device supports anisotropy.
     auto const deviceFeatures = vk::PhysicalDeviceFeatures{};
 
     auto const device = gpu.createDeviceUnique(vk::DeviceCreateInfo({}, 
