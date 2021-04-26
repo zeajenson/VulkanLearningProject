@@ -1,10 +1,13 @@
-#include<filesystem>
-#include<fstream>
 #include<vector>
 #include<iostream>
+#include<fstream>
+#include<filesystem>
 
 #include<vulkan/vulkan.hpp>
 #include<GLFW/glfw3.h>
+
+#define GLM_FORCE_RADIANS
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include<glm/glm.hpp>
 #include<glm/gtc/matrix_transform.hpp>
 
@@ -121,7 +124,11 @@ auto createSwapchain(
     return device->createSwapchainKHRUnique(info);
 }
 
-auto create_image_view(vk::Device const device, vk::Image const image, vk::Format const format){
+auto create_image_view(
+        vk::Device const device, 
+        vk::Image const image, 
+        vk::Format const format, 
+        vk::ImageAspectFlags const aspectFlags){
     return device.createImageViewUnique(
             vk::ImageViewCreateInfo({}, 
                 image, 
@@ -129,7 +136,7 @@ auto create_image_view(vk::Device const device, vk::Image const image, vk::Forma
                 format, 
                 {}, 
                 vk::ImageSubresourceRange(
-                    vk::ImageAspectFlagBits::eColor, 
+                    aspectFlags, 
                     0, 
                     1, 
                     0, 
@@ -146,7 +153,11 @@ auto createSwapchainImageViews(
     auto const swizIdent = vk::ComponentSwizzle::eIdentity;
     
     for(auto const & image: swapchainImages)
-        imageViews.push_back(create_image_view(device.get(), image, surfaceFormat.format));
+        imageViews.push_back(create_image_view(
+                    device.get(), 
+                    image, 
+                    surfaceFormat.format, 
+                    vk::ImageAspectFlagBits::eColor));
     
     return imageViews;
 }
@@ -168,7 +179,27 @@ auto createShaderModule(std::filesystem::path path, vk::Device const device){
             reinterpret_cast<uint32_t const *>(shaderCode.data())));
 }
 
-auto createRenderPass(vk::UniqueDevice const & device, vk::Format format){
+auto find_supported_format(
+        vk::PhysicalDevice const gpu,
+        std::vector<vk::Format> const & formats, 
+        vk::ImageTiling tiling, 
+        vk::FormatFeatureFlags features) 
+    -> std::optional<vk::Format>
+{
+    for(auto const & format : formats){
+        auto const props = gpu.getFormatProperties(format);
+
+        if(tiling == vk::ImageTiling::eLinear && (props.linearTilingFeatures & features) == features)
+            return format;
+
+        if(tiling == vk::ImageTiling::eOptimal && (props.optimalTilingFeatures & features) == features)
+            return format;
+    }
+
+    return std::nullopt;
+}
+
+auto createRenderPass(vk::UniqueDevice const & device, vk::PhysicalDevice const gpu, vk::Format format){
     auto const collorAttachment = vk::AttachmentDescription({}, 
             format, 
             vk::SampleCountFlagBits::e1, 
@@ -182,24 +213,59 @@ auto createRenderPass(vk::UniqueDevice const & device, vk::Format format){
 
     auto const colorAttachmentRef = vk::AttachmentReference(0, vk::ImageLayout::eColorAttachmentOptimal);
 
-    auto const subpass = vk::SubpassDescription({}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &colorAttachmentRef);
+    auto const depthFormat = find_supported_format(
+            gpu,
+            {
+                vk::Format::eD32Sfloat,
+                vk::Format::eD32SfloatS8Uint,
+                vk::Format::eD24UnormS8Uint
+            },
+            vk::ImageTiling::eOptimal,
+            vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+
+    if(not depthFormat) throw std::runtime_error("Missing depth format");
+
+    auto const depthAttachment = vk::AttachmentDescription({}, 
+            depthFormat.value(), 
+            vk::SampleCountFlagBits::e1, 
+            vk::AttachmentLoadOp::eClear, 
+            vk::AttachmentStoreOp::eStore, 
+            vk::AttachmentLoadOp::eDontCare, 
+            vk::AttachmentStoreOp::eDontCare, 
+            vk::ImageLayout::eUndefined, 
+            vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal);
+
+    auto const depthAttachmentRef = vk::AttachmentReference(
+            1, 
+            vk::ImageLayout::eDepthStencilAttachmentOptimal);
+    
+    auto const subpass = vk::SubpassDescription({}, 
+            vk::PipelineBindPoint::eGraphics, 
+            {}, 
+            colorAttachmentRef, 
+            {}, 
+            &depthAttachmentRef);  
 
     auto const subpassDependency = vk::SubpassDependency(
             VK_SUBPASS_EXTERNAL, 
             0, 
-            vk::PipelineStageFlagBits::eColorAttachmentOutput, 
-            vk::PipelineStageFlagBits::eColorAttachmentOutput, 
+            vk::PipelineStageFlagBits::eColorAttachmentOutput 
+            | vk::PipelineStageFlagBits::eEarlyFragmentTests, 
+            vk::PipelineStageFlagBits::eColorAttachmentOutput
+            | vk::PipelineStageFlagBits::eEarlyFragmentTests, 
             {}, 
-            vk::AccessFlagBits::eColorAttachmentWrite);
+            vk::AccessFlagBits::eColorAttachmentWrite
+            | vk::AccessFlagBits::eDepthStencilAttachmentWrite);
 
+    auto const attachments = std::array{collorAttachment, depthAttachment};
     return device->createRenderPassUnique(vk::RenderPassCreateInfo({}, 
-                1, &collorAttachment, 
-                1, &subpass, 
-                1, &subpassDependency));
+                attachments, 
+                subpass, 
+                subpassDependency));
 }
 
 struct Vertex{
-    glm::vec2 position;
+    glm::vec3 position;
     glm::vec3 color;
     glm::vec2 texCoord;
 };
@@ -215,7 +281,7 @@ auto createVertexBindingDescritptions(){
 
     position.binding = 0;
     position.location = 0;
-    position.format = vk::Format::eR32G32Sfloat;
+    position.format = vk::Format::eR32G32B32Sfloat;
     position.offset = offsetof(Vertex, position);
 
     color.binding = 0;
@@ -339,6 +405,17 @@ auto createGraphicsPipeline(
     };
     auto const dynamicState = vk::PipelineDynamicStateCreateInfo({}, dynamicStates);
 
+    auto const depthStencil = vk::PipelineDepthStencilStateCreateInfo({}, 
+            VK_TRUE, 
+            VK_TRUE, 
+            vk::CompareOp::eLess, 
+            VK_FALSE, 
+            VK_FALSE, 
+            {}, 
+            {}, 
+            0.0f, 
+            1.0f);
+
     auto const pipelineCreateInfo = [&]{
         auto pipelineCreateInfo = vk::GraphicsPipelineCreateInfo{};
         pipelineCreateInfo
@@ -350,6 +427,7 @@ auto createGraphicsPipeline(
             .setPMultisampleState(&multisampleing)
             .setPColorBlendState(&colorBlending)
             .setPDynamicState(&dynamicState)
+            .setPDepthStencilState(&depthStencil)
             .setLayout(layout)
             .setRenderPass(renderPass);
 
@@ -365,6 +443,7 @@ auto createGraphicsPipeline(
 auto createFrameBuffers(
         vk::UniqueDevice const & device, 
         std::vector<vk::UniqueImageView> const & swapchainImageViews,
+        vk::UniqueImageView const & depthImageView,
         vk::UniqueRenderPass const & renderPass,
         vk::Extent2D const & extent)
 {
@@ -372,9 +451,13 @@ auto createFrameBuffers(
     frameBuffers.reserve(swapchainImageViews.size());
     for(auto const & imageView : swapchainImageViews){
         
-        auto const attachments = std::vector{ imageView.get() };
+        auto const attachments = std::vector{ 
+            imageView.get(), 
+            depthImageView.get() 
+        };
 
-        frameBuffers.push_back(device->createFramebufferUnique(vk::FramebufferCreateInfo({}, 
+        frameBuffers.push_back(device->createFramebufferUnique(
+                    vk::FramebufferCreateInfo({}, 
                         renderPass.get(), 
                         attachments, 
                         extent.width, 
@@ -756,36 +839,16 @@ void copy_buffer_to_image(
             1, &region);
 }
 
-struct pixelDeleter { void operator() (uint8_t * pixels){stbi_image_free(pixels);} };
-using pixelsRef = std::unique_ptr<uint8_t, pixelDeleter>;
-
 auto create_image(        
         vk::UniqueDevice const & device,
         vk::PhysicalDevice const & gpu,
         vk::Format format,
         vk::ImageTiling tiling,
         vk::ImageUsageFlags usage,
+        vk::MemoryPropertyFlags properties,
         int const width,
-        int const height,
-        pixelsRef pixels) 
+        int const height) 
 {
-    auto const size = vk::DeviceSize(width * height * 4);
-
-    auto [
-        buffer,
-        memory
-    ] = createBuffer(
-            device, 
-            gpu, 
-            size, 
-            vk::BufferUsageFlagBits::eTransferSrc, 
-            vk::MemoryPropertyFlagBits::eHostVisible 
-            | vk::MemoryPropertyFlagBits::eHostCoherent);
-
-    auto data = device->mapMemory(memory.get(), 0, size);
-    memcpy(data, pixels.get(), static_cast<size_t>(size));
-    device->unmapMemory(memory.get());
-
     auto const imageInfo = vk::ImageCreateInfo({}, 
             vk::ImageType::e2D, 
             format, 
@@ -802,29 +865,23 @@ auto create_image(
     auto image = device->createImageUnique(imageInfo);
 
     auto const memoryRequirements = device->getImageMemoryRequirements(image.get());
-    auto textureMemory = device->allocateMemoryUnique(vk::MemoryAllocateInfo(
+    auto imageMemory = device->allocateMemoryUnique(vk::MemoryAllocateInfo(
                 memoryRequirements.size, 
                 findMemoryType(
-                    gpu, 
+                    gpu,
                     memoryRequirements.memoryTypeBits, 
-                    vk::MemoryPropertyFlagBits::eDeviceLocal)));
+                    properties)));
 
-    device->bindImageMemory(image.get(), textureMemory.get(), 0);
+    device->bindImageMemory(image.get(), imageMemory.get(), 0);
 
-    struct Stuff{
-        vk::UniqueBuffer stagingBuffer;
-        vk::UniqueDeviceMemory stagingBufferMemory;
-        vk::UniqueImage image;
-        vk::UniqueDeviceMemory imageMemory;
-    };
-
-    return Stuff{
-        std::move(buffer),
-        std::move(memory),
+    return ImageHandles{
         std::move(image),
-        std::move(textureMemory)
+        std::move(imageMemory)
     };
 }
+
+struct pixelDeleter { void operator() (uint8_t * pixels){stbi_image_free(pixels);} };
+using pixelsRef = std::unique_ptr<uint8_t, pixelDeleter>;
 
 auto create_texture_image(        
         vk::UniqueDevice const & device,
@@ -835,14 +892,29 @@ auto create_texture_image(
 {
     int width, height, channels;
     auto const filename = path.c_str();
-    auto pixels = pixelsRef(stbi_load("./Image.jpg", &width, &height, &channels, STBI_rgb_alpha));
+    //TODO: unbreak the path.
+    auto pixels = pixelsRef(stbi_load("./Image.png", &width, &height, &channels, STBI_rgb_alpha));
     if(not pixels){
         std::cerr << "No pixels for texture: " << filename << std::endl;
     }
 
+    auto const size = vk::DeviceSize(width * height * 4);
     auto [
         stagingBuffer,
-        stagingBufferMemory,
+        memory
+    ] = createBuffer(
+            device, 
+            gpu, 
+            size, 
+            vk::BufferUsageFlagBits::eTransferSrc, 
+            vk::MemoryPropertyFlagBits::eHostVisible 
+            | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+    auto data = device->mapMemory(memory.get(), 0, size);
+    memcpy(data, pixels.get(), static_cast<size_t>(size));
+    device->unmapMemory(memory.get());
+
+    auto [
         image,
         imageMemory
     ] = create_image(
@@ -852,8 +924,8 @@ auto create_texture_image(
             vk::ImageTiling::eOptimal,
             vk::ImageUsageFlagBits::eTransferDst 
             | vk::ImageUsageFlagBits::eSampled, 
-            width, height,
-            std::move(pixels));
+            vk::MemoryPropertyFlagBits::eDeviceLocal,
+            width, height);
     {
         auto commandScope = CommandScope(device, commandPool, graphicsQueue);
         transition_image_layout(
@@ -898,6 +970,59 @@ auto create_texture_sampler(vk::Device const device, vk::PhysicalDevice const gp
             .setMipLodBias(0).setMinLod(0).setMaxLod(0));
 }
 
+auto has_stencil_component(vk::Format format){
+    return format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint;
+}
+
+struct DepthImageHandles{
+    vk::UniqueImage image;
+    vk::UniqueDeviceMemory imageMemory;
+    vk::UniqueImageView imageView;
+};
+
+auto create_depth_resource(
+        vk::UniqueDevice const & device, 
+        vk::PhysicalDevice const & gpu,
+        vk::Extent2D const & swapchainExtent)
+{
+    auto const depthFormat = find_supported_format(
+            gpu,
+            {
+                vk::Format::eD32Sfloat,
+                vk::Format::eD32SfloatS8Uint,
+                vk::Format::eD24UnormS8Uint
+            },
+            vk::ImageTiling::eOptimal,
+            vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+
+    if(not depthFormat) throw std::runtime_error("no format for depth image");
+
+    //TODO: figure out why the tutorial pases in a memory usage bit
+    auto [
+        image,
+        imageMemory
+    ] = create_image(
+            device, 
+            gpu, 
+            depthFormat.value(), 
+            vk::ImageTiling::eOptimal, 
+            vk::ImageUsageFlagBits::eDepthStencilAttachment, 
+            vk::MemoryPropertyFlagBits::eDeviceLocal,
+            swapchainExtent.width, 
+            swapchainExtent.height);
+    
+    auto imageView = create_image_view(
+            device.get(), 
+            image.get(), 
+            depthFormat.value(), vk::ImageAspectFlagBits::eDepth);
+
+    return DepthImageHandles{
+        std::move(image),
+        std::move(imageMemory),
+        std::move(imageView)
+    };
+}
+
 struct VulkanRenderState{
     vk::UniqueSwapchainKHR swapchain;
     std::vector<vk::UniqueImageView> swapchainImageViews;
@@ -905,6 +1030,7 @@ struct VulkanRenderState{
     vk::UniqueDescriptorSetLayout descriptorSetLayout;
     vk::UniquePipelineLayout pipelineLayout;
     vk::UniquePipeline graphicsPipeline;
+    DepthImageHandles depthImageHandles;
     std::vector<vk::UniqueFramebuffer> frameBuffers;
     vk::UniqueCommandPool commandPool;
     vk::UniqueDescriptorPool descriptorPool;
@@ -961,7 +1087,7 @@ auto createVulkanRenderState(
             device->getSwapchainImagesKHR(swapchain.get()), 
             surfaceFormat);
 
-    auto renderPass = createRenderPass(device, swapchainImageFormat);
+    auto renderPass = createRenderPass(device, gpu, swapchainImageFormat);
     auto descriptorSetLayout = create_descriptor_set_layout(device.get());
     auto pipelineLayout = device->createPipelineLayoutUnique(vk::PipelineLayoutCreateInfo({}, 
                 1,
@@ -974,21 +1100,33 @@ auto createVulkanRenderState(
                 extent)
             .back());
 
-    auto frameBuffers = createFrameBuffers(device, swapchainImageViews, renderPass, extent);
+    auto depthImageHandles = create_depth_resource(device, gpu, extent);
+    auto frameBuffers = createFrameBuffers(
+            device, 
+            swapchainImageViews, 
+            depthImageHandles.imageView, 
+            renderPass, 
+            extent);
 
     auto commandPool = device->createCommandPoolUnique(vk::CommandPoolCreateInfo({}, graphicsIndex));
 
     auto descriptorPool = create_descriptor_pool(device.get(), swapchainImageViews.size());
 
     auto const vertices = std::vector<Vertex>{
-        {{0,    0.5},   {1,0,1},    {1, 0}},
-        {{-0.5, 0},     {0,1,0},    {0, 0}},
-        {{0.5,  0},     {1,0,1},    {0, 1}},
-        {{1,    1},     {1,1,0},    {1, 1}}
+        {{0,    0.5,    0.0},     {1,0,1},    {1, 0}},
+        {{-0.5, 0,      0.0},     {0,1,0},    {0, 0}},
+        {{0.5,  0,      0.0},     {1,0,1},    {0, 1}},
+        {{1,    1,      0.0},     {1,1,0},    {1, 1}},
+
+        {{0,    0.5,    -0.5},     {1,0,1},    {1, 0}},
+        {{-0.5, 0,      -0.5},     {0,1,0},    {0, 0}},
+        {{0.5,  0,      -0.5},     {1,0,1},    {0, 1}},
+        {{1,    1,      -0.5},     {1,1,0},    {1, 1}},
     };
 
     auto const indices = std::vector<uint16_t>{
-        0, 1, 2, 2, 3, 0
+        0, 1, 2, 2, 3, 0,
+        4, 5, 6, 6, 7, 4
     };
 
     auto const graphicsQueue = device->getQueue(graphicsIndex,0);
@@ -1006,7 +1144,11 @@ auto createVulkanRenderState(
     auto uniformBuffers = createUniformBuffers(device, gpu, commandPool, graphicsQueue, swapchainImageViews.size());
 
     auto imageHandles = create_texture_image(device, gpu, commandPool, graphicsQueue, "Image.jpg");
-    auto textureImageView = create_image_view(device.get(), imageHandles.image.get(), vk::Format::eR8G8B8Srgb);
+    auto textureImageView = create_image_view(
+            device.get(), 
+            imageHandles.image.get(), 
+            vk::Format::eR8G8B8A8Srgb, 
+            vk::ImageAspectFlagBits::eColor);
     auto textureSampler = create_texture_sampler(device.get(), gpu);
 
     auto descriptorSets = create_descriptor_sets(
@@ -1037,7 +1179,6 @@ auto createVulkanRenderState(
         device->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
     }
 
-
     auto commandBuffers = device->allocateCommandBuffersUnique(vk::CommandBufferAllocateInfo(
                 commandPool.get(), 
                 vk::CommandBufferLevel::ePrimary, 
@@ -1048,7 +1189,12 @@ auto createVulkanRenderState(
         auto const & commandBuffer = commandBuffers[i];
         auto const & frameBuffer = frameBuffers[i];
         commandBuffer->begin(vk::CommandBufferBeginInfo());
-        auto const clearColor = std::vector{vk::ClearValue(vk::ClearColorValue(std::array{0.0f, 0.0f, 0.0f ,0.0f}))};
+
+        auto const clearColor = std::vector{
+            vk::ClearValue(vk::ClearColorValue(std::array{0.0f, 0.0f, 0.0f ,0.0f})),
+            vk::ClearValue().setDepthStencil({1.0f, 0})
+        };
+
         auto const renderArea = vk::Rect2D({0,0},extent);
         commandBuffer->beginRenderPass(
                 vk::RenderPassBeginInfo(
@@ -1093,6 +1239,7 @@ auto createVulkanRenderState(
         std::move(descriptorSetLayout),
         std::move(pipelineLayout),
         std::move(graphicsPipeline),
+        std::move(depthImageHandles),
         std::move(frameBuffers),
         std::move(commandPool),
         std::move(descriptorPool),
