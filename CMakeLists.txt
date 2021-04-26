@@ -12,5 +12,7 @@ find_package(glm REQUIRED FATAL_ERROR)
 add_executable(VulkanLearningProject main.cpp) 
 
 include_directories(extern/stb)
+add_subdirectory(extern/tinyobjloader)
+include_directories(extern/tinyobjloader)
 
 target_link_libraries(VulkanLearningProject glfw Vulkan::Vulkan glm)
