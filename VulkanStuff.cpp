@@ -14,6 +14,8 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include<stb_image.h>
 
+#include<tiny_obj_loader.h>
+
 #include"GlfwStuff.cpp"
 
 auto createDebugMessanger(
@@ -620,7 +622,7 @@ auto createIndexBuffer(
         vk::PhysicalDevice const & gpu, 
         vk::UniqueCommandPool const & commandPool,
         vk::Queue const & graphicsQueue,
-        std::vector<uint16_t> const & indices)
+        std::vector<uint32_t> const & indices)
 {
     auto const bufferSize = vk::DeviceSize(sizeof(Vertex) * indices.size());
 
@@ -888,12 +890,10 @@ auto create_texture_image(
         vk::PhysicalDevice const & gpu,
         vk::UniqueCommandPool const & commandPool,
         vk::Queue const & graphicsQueue,
-        std::filesystem::path path) noexcept
+        char const * filename) noexcept
 {
     int width, height, channels;
-    auto const filename = path.c_str();
-    //TODO: unbreak the path.
-    auto pixels = pixelsRef(stbi_load("./Image.png", &width, &height, &channels, STBI_rgb_alpha));
+    auto pixels = pixelsRef(stbi_load(filename, &width, &height, &channels, STBI_rgb_alpha));
     if(not pixels){
         std::cerr << "No pixels for texture: " << filename << std::endl;
     }
@@ -1023,6 +1023,53 @@ auto create_depth_resource(
     };
 }
 
+//TODO: don't use tiny obj loader. it's kinda bad.
+auto load_model(char const * filename){
+    auto attrib = tinyobj::attrib_t{};
+    auto shapes = std::vector<tinyobj::shape_t>{};
+    auto materials = std::vector<tinyobj::material_t>{};
+    std::string warn, err;
+
+    if(!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, filename))
+        throw std::runtime_error(warn + err);
+
+    auto vertices = std::vector<Vertex>{};
+    vertices.reserve(attrib.vertices.size() / 3);
+
+    auto indices = std::vector<uint32_t>{};
+    auto currentIndex = uint32_t{0};
+
+    for(auto const & shape: shapes){
+        for(auto const & index: shape.mesh.indices){
+            auto vertex = Vertex{};
+
+            vertex.position = {
+                attrib.vertices[3 * index.vertex_index + 0],
+                attrib.vertices[3 * index.vertex_index + 1],
+                attrib.vertices[3 * index.vertex_index + 2]
+            };
+
+            vertex.texCoord = {
+                attrib.texcoords[2 * index.texcoord_index + 0],
+                attrib.texcoords[2 * index.texcoord_index + 1]
+            };
+
+            vertices.push_back(vertex);
+            
+        }
+    }
+
+    struct {
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+    } meshData{
+        vertices,
+        indices
+    };
+
+    return meshData;
+}
+
 struct VulkanRenderState{
     vk::UniqueSwapchainKHR swapchain;
     std::vector<vk::UniqueImageView> swapchainImageViews;
@@ -1112,24 +1159,30 @@ auto createVulkanRenderState(
 
     auto descriptorPool = create_descriptor_pool(device.get(), swapchainImageViews.size());
 
-    auto const vertices = std::vector<Vertex>{
-        {{0,    0.5,    0.0},     {1,0,1},    {1, 0}},
-        {{-0.5, 0,      0.0},     {0,1,0},    {0, 0}},
-        {{0.5,  0,      0.0},     {1,0,1},    {0, 1}},
-        {{1,    1,      0.0},     {1,1,0},    {1, 1}},
-
-        {{0,    0.5,    -0.5},     {1,0,1},    {1, 0}},
-        {{-0.5, 0,      -0.5},     {0,1,0},    {0, 0}},
-        {{0.5,  0,      -0.5},     {1,0,1},    {0, 1}},
-        {{1,    1,      -0.5},     {1,1,0},    {1, 1}},
-    };
-
-    auto const indices = std::vector<uint16_t>{
-        0, 1, 2, 2, 3, 0,
-        4, 5, 6, 6, 7, 4
-    };
+//    auto const vertices = std::vector<Vertex>{
+//        {{0,    0.5,    0.0},     {1,0,1},    {1, 0}},
+//        {{-0.5, 0,      0.0},     {0,1,0},    {0, 0}},
+//        {{0.5,  0,      0.0},     {1,0,1},    {0, 1}},
+//        {{1,    1,      0.0},     {1,1,0},    {1, 1}},
+//
+//        {{0,    0.5,    -0.5},     {1,0,1},    {1, 0}},
+//        {{-0.5, 0,      -0.5},     {0,1,0},    {0, 0}},
+//        {{0.5,  0,      -0.5},     {1,0,1},    {0, 1}},
+//        {{1,    1,      -0.5},     {1,1,0},    {1, 1}},
+//    };
+//
+//    auto const indices = std::vector<uint16_t>{
+//        0, 1, 2, 2, 3, 0,
+//        4, 5, 6, 6, 7, 4
+//    };
 
     auto const graphicsQueue = device->getQueue(graphicsIndex,0);
+
+
+    auto [
+        vertices,
+        indices
+    ] = load_model("./assets/viking_room.obj");
 
     auto [
         vertexBuffer,
@@ -1214,7 +1267,7 @@ auto createVulkanRenderState(
 
         vk::DeviceSize offsets[] = {0};
         commandBuffer->bindVertexBuffers(0, 1, &vertexBuffer.get(), offsets);
-        commandBuffer->bindIndexBuffer(indexBuffer.get(), 0, vk::IndexType::eUint16);
+        commandBuffer->bindIndexBuffer(indexBuffer.get(), 0, vk::IndexType::eUint32);
 
         commandBuffer->bindDescriptorSets(
                 vk::PipelineBindPoint::eGraphics, 
