@@ -14,6 +14,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include<stb_image.h>
 
+#define TINYOBJLOADER_IMPLEMENTATION 
 #include<tiny_obj_loader.h>
 
 #include"GlfwStuff.cpp"
@@ -1051,13 +1052,16 @@ auto load_model(char const * filename){
 
             vertex.texCoord = {
                 attrib.texcoords[2 * index.texcoord_index + 0],
-                attrib.texcoords[2 * index.texcoord_index + 1]
+                1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
             };
 
             vertices.push_back(vertex);
-            
+            indices.push_back(currentIndex);
+            currentIndex += 1;
         }
     }
+
+    std::cout << vertices.size() << " " << indices.size() << std::endl;
 
     struct {
         std::vector<Vertex> vertices;
@@ -1171,7 +1175,7 @@ auto createVulkanRenderState(
 //        {{1,    1,      -0.5},     {1,1,0},    {1, 1}},
 //    };
 //
-//    auto const indices = std::vector<uint16_t>{
+//    auto const indices = std::vector<uint32_t>{
 //        0, 1, 2, 2, 3, 0,
 //        4, 5, 6, 6, 7, 4
 //    };
@@ -1183,6 +1187,7 @@ auto createVulkanRenderState(
         vertices,
         indices
     ] = load_model("./assets/viking_room.obj");
+
 
     auto [
         vertexBuffer,
@@ -1196,7 +1201,7 @@ auto createVulkanRenderState(
 
     auto uniformBuffers = createUniformBuffers(device, gpu, commandPool, graphicsQueue, swapchainImageViews.size());
 
-    auto imageHandles = create_texture_image(device, gpu, commandPool, graphicsQueue, "Image.jpg");
+    auto imageHandles = create_texture_image(device, gpu, commandPool, graphicsQueue, "./assets/viking_room.png");
     auto textureImageView = create_image_view(
             device.get(), 
             imageHandles.image.get(), 

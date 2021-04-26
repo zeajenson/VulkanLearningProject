@@ -14,6 +14,6 @@ include_directories(extern/stb)
 add_subdirectory(extern/tinyobjloader)
 include_directories(extern/tinyobjloader)
 
-add_executable(VulkanLearningProject main.cpp extern/tinyobjloader/tiny_obj_loader.cc) 
+add_executable(VulkanLearningProject main.cpp) 
 
 target_link_libraries(VulkanLearningProject glfw Vulkan::Vulkan glm)
