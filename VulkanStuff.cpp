@@ -131,7 +131,9 @@ auto create_image_view(
         vk::Device const device, 
         vk::Image const image, 
         vk::Format const format, 
-        vk::ImageAspectFlags const aspectFlags){
+        vk::ImageAspectFlags const aspectFlags,
+        uint32_t mipLevels)
+{
     return device.createImageViewUnique(
             vk::ImageViewCreateInfo({}, 
                 image, 
@@ -141,7 +143,7 @@ auto create_image_view(
                 vk::ImageSubresourceRange(
                     aspectFlags, 
                     0, 
-                    1, 
+                    mipLevels, 
                     0, 
                     1)));
 }
@@ -160,7 +162,8 @@ auto createSwapchainImageViews(
                     device.get(), 
                     image, 
                     surfaceFormat.format, 
-                    vk::ImageAspectFlagBits::eColor));
+                    vk::ImageAspectFlagBits::eColor,
+                    1));
     
     return imageViews;
 }
@@ -555,6 +558,8 @@ struct CommandScope{
         device->waitIdle();
     }
 
+    auto & operator ->(){return commandBuffer.get();}
+
     vk::UniqueDevice const & device;
     vk::Queue const & graphicsQueue;
     vk::UniqueCommandBuffer commandBuffer;
@@ -769,7 +774,8 @@ auto transition_image_layout(
         vk::UniqueImage const & image,
         vk::Format const & format,
         vk::ImageLayout const & oldLayout,
-        vk::ImageLayout const & newLayout)
+        vk::ImageLayout const & newLayout,
+        int32_t mipLevels)
 {
     auto barrier = vk::ImageMemoryBarrier(
             {},
@@ -782,7 +788,7 @@ auto transition_image_layout(
             vk::ImageSubresourceRange(
                 vk::ImageAspectFlagBits::eColor,
                 0, 
-                1, 
+                mipLevels, 
                 0, 
                 1)
             );
@@ -849,14 +855,15 @@ auto create_image(
         vk::ImageTiling tiling,
         vk::ImageUsageFlags usage,
         vk::MemoryPropertyFlags properties,
-        int const width,
-        int const height) 
+        uint32_t const width,
+        uint32_t const height,
+        uint32_t mipLevels)
 {
     auto const imageInfo = vk::ImageCreateInfo({}, 
             vk::ImageType::e2D, 
             format, 
             vk::Extent3D(width, height, 1), 
-            1, 
+            mipLevels,
             1, 
             vk::SampleCountFlagBits::e1, 
             tiling,
@@ -883,6 +890,95 @@ auto create_image(
     };
 }
 
+auto generate_mipmaps(
+        vk::UniqueDevice const & device,
+        vk::PhysicalDevice const & gpu,
+        vk::UniqueCommandPool const & commandPool,
+        vk::Queue const graphicsQueue,
+        vk::Image const image,
+        vk::Format const & imageFormat,
+        int32_t texWidth,
+        int32_t texHeight,
+        uint32_t mipLevels)
+{
+    auto formatProperties = gpu.getFormatProperties(imageFormat);
+
+    if(not(formatProperties.linearTilingFeatures & vk::FormatFeatureFlagBits::eSampledImageFilterLinear))
+        throw std::runtime_error("Texture image formationg cannot do the leanear blit");
+
+    auto commandScope = CommandScope(device, commandPool, graphicsQueue);
+
+    auto barrier = vk::ImageMemoryBarrier(
+            {}, {}, {}, {}, {}, {}, 
+            image, 
+            vk::ImageSubresourceRange(
+                vk::ImageAspectFlagBits::eColor, 
+                0, 
+                1, 
+                0, 
+                1));
+
+    auto mipWidth = texWidth;
+    auto mipHeight = texHeight;
+
+    for(uint32_t i = 1; i < mipLevels; i++){
+        barrier.subresourceRange.baseMipLevel = i - 1;
+        barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+        barrier.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+        barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+        barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+
+        commandScope.commandBuffer->pipelineBarrier(
+                vk::PipelineStageFlagBits::eTransfer, 
+                vk::PipelineStageFlagBits::eTransfer, 
+                {},{},{}, 
+                barrier);
+
+        auto blit = vk::ImageBlit(
+                //src
+                vk::ImageSubresourceLayers(
+                    vk::ImageAspectFlagBits::eColor, 
+                    i - 1,
+                    0,
+                    1), 
+                {
+                    vk::Offset3D(0, 0, 0), 
+                    vk::Offset3D(mipWidth, mipHeight, 1)
+                }, 
+                //dst
+                vk::ImageSubresourceLayers(
+                    vk::ImageAspectFlagBits::eColor, 
+                    i, 
+                    0, 
+                    1), 
+                {vk::Offset3D(0,0,0), 
+                vk::Offset3D(
+                        mipWidth > 1 
+                            ? mipWidth / 2 
+                            : 1, 
+                        mipHeight > 1 
+                            ? mipHeight/ 2 
+                            : 1)});
+
+        commandScope.commandBuffer->blitImage(
+                image, vk::ImageLayout::eTransferSrcOptimal,
+                image, vk::ImageLayout::eTransferDstOptimal, 
+                blit, 
+                vk::Filter::eLinear);
+
+        barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+        barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+        barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+
+        commandScope.commandBuffer->pipelineBarrier(
+                vk::PipelineStageFlagBits::eTransfer, 
+                vk::PipelineStageFlagBits::eFragmentShader, 
+                {}, {}, {},
+                barrier);
+    }
+}
+
 struct pixelDeleter { void operator() (uint8_t * pixels){stbi_image_free(pixels);} };
 using pixelsRef = std::unique_ptr<uint8_t, pixelDeleter>;
 
@@ -891,7 +987,8 @@ auto create_texture_image(
         vk::PhysicalDevice const & gpu,
         vk::UniqueCommandPool const & commandPool,
         vk::Queue const & graphicsQueue,
-        char const * filename) noexcept
+        uint32_t mipLevels,
+        char const * filename)
 {
     int width, height, channels;
     auto pixels = pixelsRef(stbi_load(filename, &width, &height, &channels, STBI_rgb_alpha));
@@ -924,9 +1021,10 @@ auto create_texture_image(
             vk::Format::eR8G8B8A8Srgb,
             vk::ImageTiling::eOptimal,
             vk::ImageUsageFlagBits::eTransferDst 
+            | vk::ImageUsageFlagBits::eTransferSrc
             | vk::ImageUsageFlagBits::eSampled, 
             vk::MemoryPropertyFlagBits::eDeviceLocal,
-            width, height);
+            width, height, mipLevels);
     {
         auto commandScope = CommandScope(device, commandPool, graphicsQueue);
         transition_image_layout(
@@ -935,17 +1033,30 @@ auto create_texture_image(
                 image, 
                 vk::Format::eR8G8B8A8Srgb, 
                 vk::ImageLayout::eUndefined, 
-                vk::ImageLayout::eTransferDstOptimal);
+                vk::ImageLayout::eTransferDstOptimal,
+                mipLevels);
 
         copy_buffer_to_image(commandScope.commandBuffer, stagingBuffer, image, width, height);
 
-        transition_image_layout(
+//        transition_image_layout(
+//                device, 
+//                commandScope.commandBuffer,
+//                image, 
+//                vk::Format::eR8G8B8A8Srgb, 
+//                vk::ImageLayout::eTransferDstOptimal, 
+//                vk::ImageLayout::eShaderReadOnlyOptimal,
+//                mipLevels);
+
+        generate_mipmaps(
                 device, 
-                commandScope.commandBuffer,
-                image, 
-                vk::Format::eR8G8B8A8Srgb, 
-                vk::ImageLayout::eTransferDstOptimal, 
-                vk::ImageLayout::eShaderReadOnlyOptimal);
+                gpu, 
+                commandPool, 
+                graphicsQueue, 
+                image.get(), 
+                vk::Format::eR8G8B8A8Srgb,
+                width, 
+                height, 
+                mipLevels);
     }
 
     return ImageHandles{
@@ -954,7 +1065,11 @@ auto create_texture_image(
     };
 }
 
-auto create_texture_sampler(vk::Device const device, vk::PhysicalDevice const gpu){
+auto create_texture_sampler(
+        vk::Device const device, 
+        vk::PhysicalDevice const gpu, 
+        uint32_t mipLevels)
+{
     return device.createSamplerUnique(vk::SamplerCreateInfo()
             .setMagFilter(vk::Filter::eLinear)
             .setMinFilter(vk::Filter::eLinear)
@@ -968,7 +1083,7 @@ auto create_texture_sampler(vk::Device const device, vk::PhysicalDevice const gp
             .setCompareEnable(VK_FALSE)
             .setCompareOp(vk::CompareOp::eAlways)
             .setMipmapMode(vk::SamplerMipmapMode::eLinear)
-            .setMipLodBias(0).setMinLod(0).setMaxLod(0));
+            .setMipLodBias(0).setMinLod(0).setMaxLod(mipLevels));
 }
 
 auto has_stencil_component(vk::Format format){
@@ -1010,12 +1125,12 @@ auto create_depth_resource(
             vk::ImageUsageFlagBits::eDepthStencilAttachment, 
             vk::MemoryPropertyFlagBits::eDeviceLocal,
             swapchainExtent.width, 
-            swapchainExtent.height);
+            swapchainExtent.height, 1);
     
     auto imageView = create_image_view(
             device.get(), 
             image.get(), 
-            depthFormat.value(), vk::ImageAspectFlagBits::eDepth);
+            depthFormat.value(), vk::ImageAspectFlagBits::eDepth, 1);
 
     return DepthImageHandles{
         std::move(image),
@@ -1093,6 +1208,7 @@ struct VulkanRenderState{
     vk::UniqueDeviceMemory indexBufferMemory;
     std::vector<std::pair<vk::UniqueBuffer, vk::UniqueDeviceMemory>> uniformBuffers;
     ImageHandles imageHandles;
+    uint32_t textureMipmapLevels;
     vk::UniqueImageView textureImageView;
     vk::UniqueSampler textureSampler;
     vk::Extent2D swapchainExtent;
@@ -1201,13 +1317,16 @@ auto createVulkanRenderState(
 
     auto uniformBuffers = createUniformBuffers(device, gpu, commandPool, graphicsQueue, swapchainImageViews.size());
 
-    auto imageHandles = create_texture_image(device, gpu, commandPool, graphicsQueue, "./assets/viking_room.png");
+    uint32_t mipLevels = 2;
+
+    auto imageHandles = create_texture_image(device, gpu, commandPool, graphicsQueue, mipLevels, "./assets/viking_room.png");
     auto textureImageView = create_image_view(
             device.get(), 
             imageHandles.image.get(), 
             vk::Format::eR8G8B8A8Srgb, 
-            vk::ImageAspectFlagBits::eColor);
-    auto textureSampler = create_texture_sampler(device.get(), gpu);
+            vk::ImageAspectFlagBits::eColor, 
+            mipLevels);
+    auto textureSampler = create_texture_sampler(device.get(), gpu, mipLevels);
 
     auto descriptorSets = create_descriptor_sets(
             device.get(), 
@@ -1309,6 +1428,7 @@ auto createVulkanRenderState(
         std::move(indexBufferMemory),
         std::move(uniformBuffers),
         std::move(imageHandles),
+        mipLevels,
         std::move(textureImageView),
         std::move(textureSampler),
         extent
@@ -1330,7 +1450,7 @@ void update_uniformBuffer(
     
     ubo.model = glm::rotate(
             glm::mat4(1.0f), 
-            time * glm::radians(90.0f), 
+            time * glm::radians(30.0f), 
             glm::vec3(0.0f, 0.0f, 1.0f));
     
     ubo.view = glm::lookAt(
